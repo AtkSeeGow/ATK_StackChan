@@ -1,6 +1,21 @@
 # 5070 主機接手紀錄
 
-更新：2026-10-24。接手時先核對此文件，再讀 `SPEECH_SETUP.md`。GPU STT 與裝置五秒中文基本端到端驗收已通過；本機 TTS API 已實測，裝置合成語音播放尚未完成。下方較早的「未部署」描述為歷史紀錄，以本節最新實測為準。
+更新：2026-10-24。接手時先核對此文件，再讀 `SPEECH_SETUP.md`／`TTS_SETUP.md`。GPU STT 與裝置五秒中文基本端到端驗收已通過；.199 已編譯刷入 TTS 韌體，使用者確認裝置中文清楚、音量可接受。下方較早的「未部署」描述為歷史紀錄，以最新實測節為準。
+
+## .199 TTS 編譯、刷入與基本播放驗收（2026-10-24）
+
+**目前下一階段：**使用者不滿意 Hanhan 音色，希望更接近俏皮、愛逞強的角色聲線，決定交給 .100 接續。先讀 `VOICE_STYLE_HANDOFF.md`，在 .100 本機評估並試聽，選定後再接入。播放功能已驗收，音色尚未定案；不需要重做已通過的刷機與基本音量排查。
+
+- 專案目前已是 Git `master`，起始檢查為工作目錄乾淨；先前「尚無 .git」紀錄已過時。交接 ZIP 在 .199 不存在，但 TTS 原始碼、測試與 TTS_SETUP.md 已在目前 checkout；未解壓覆蓋私有設定。
+- .199 執行 Node 14 項與 Python 2 項測試通過；`node tools/check-synthesis.mjs` 對 .100 真實 API 通過，17 kHz／mono／16-bit，3.447 秒、peak 25404，音訊未落盤。
+- .199 既有 M5Stack core 3.3.10／M5Unified 0.2.27 工具鏈成功編譯，應用 **1,346,144 bytes**，小於原廠 0x4F0000 應用槽；partitions.csv 仍沿用原廠 offset／size。
+- 上一版可用應用留在 .199 `.tools/recovery/pre-tts-20261024.ino.bin`（1,343,664 bytes，SHA256 `a903d52cd24a4a09ed768c6c15110cb1c834c865ac6b5f52b126c3d19285ff80`）。這個私有工具目錄不走 Git，未覆蓋原廠完整備份。
+- 使用 COM4、esptool 5.3.0 ROM 模式，**僅寫入 0x20000**，hash 校驗通過並 watchdog reset。新應用 SHA256 `5ae046bba67bedae4ebfea946c2dd467127ddaeee96210051cb3c84537c059ff`。未寫 bootloader、partition table、NVS、assets 或 eFuse。
+- .199 服務在計時 idle 時重啟以載入新程式，Wi-Fi ACK 恢復。固定合成短句使用音量 208／加強輸出，狀態 queued → downloading → playback → completed；第一次約 2.556 秒收到播放回報、6.122 秒完成。這是 API／裝置狀態量測，並非聲學量測。
+- **使用者實際聽感確認：中文清楚，音量可接受。** 固定測試句不是計時控制指令，沒有操作計時。
+- 再次播放採用新 ID 成功，約 2.546 秒播放回報、6.123 秒完成；Wi-Fi ACK 持續更新，第二次檢查前後計時皆 paused，未改動使用者狀態。舊 ID 下載回 HTTP 409，不重播。
+- 播放後相機可重新啟動並連續收到 JPEG；檢查後已停止測試相機，沒有保存或展示影像。新增 `tools/check-device-playback.mjs` 可重做固定合成句的 metadata 檢查，它會實際播放但不收音。
+- 本輪尚未補真人 STT 在新韌體播放後的回歸、長句／弱網路、真實下載中斷及服務失聯測試。相機仍需手動恢復，基本播放成功不等於完整穩定性驗收。
 
 ## .100 部署實測（2026-10-24）
 
