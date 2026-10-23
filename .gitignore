@@ -1,0 +1,13 @@
+data/
+*.log
+.env
+.tools/
+backups/
+.pio/
+network.local.h
+network.dev.h
+network.dev.h.*
+settings.local.json
+services/speech/.venv/
+__pycache__/
+*.py[cod]

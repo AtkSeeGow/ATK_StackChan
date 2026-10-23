@@ -1,0 +1,20 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { RemoteDevice, sameSecret } from '../remote-device.mjs';
+test('remote device authenticates independently and rejects stale, wrong and replayed acknowledgements', () => {
+  const link = new RemoteDevice('a'.repeat(64));
+  assert.equal(link.authorized(undefined),false);
+  assert.equal(link.authorized('Bearer wrong'),false);
+  assert.equal(link.authorized('Bearer '+'a'.repeat(64)),true);
+  const state = {timer:{phase:'focus',status:'running',remainingMs:59900},presence:'unknown'};
+  link.issue(state,'happy',1000);
+  const ack = {type:'sync_ack',protocol:1,session:link.session,seq:1,remaining_seconds:60,expression:'happy',status:'running'};
+  assert.equal(link.acknowledge({...ack,session:'wrong'},2000),false);
+  assert.equal(link.acknowledge({...ack,expression:'teasing'},2000),false);
+  assert.equal(link.acknowledge(ack,2000),true);
+  assert.equal(link.acknowledge(ack,2001),false);
+  link.issue(state,'happy',3000);
+  assert.equal(link.acknowledge({...ack,seq:2},14000),false);
+  assert.equal(new RemoteDevice('').authorized('Bearer '),false);
+  assert.equal(sameSecret('short','much longer'),false);
+});

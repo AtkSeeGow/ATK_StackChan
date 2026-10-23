@@ -1,0 +1,50 @@
+"""LAN speech service. Audio stays in memory; no transcript or audio logs."""
+import io, os, json, wave, hmac, threading
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model_name='small'):
+    if len(token) < 32:
+        raise ValueError('STT_TOKEN must contain at least 32 characters')
+    busy = threading.Lock()
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def reply(self, status, value):
+            data=json.dumps(value,ensure_ascii=False).encode('utf-8')
+            self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+        def authorized(self):
+            return hmac.compare_digest(self.headers.get('Authorization','').encode(),('Bearer '+token).encode())
+        def do_GET(self):
+            if not self.authorized(): return self.reply(401,{'error':'Unauthorized'})
+            if self.path!='/health': return self.reply(404,{'error':'Not found'})
+            self.reply(200,{'ready':True,'device':device,'model':model_name})
+        def do_POST(self):
+            if not self.authorized(): return self.reply(401,{'error':'Unauthorized'})
+            if self.path!='/transcribe': return self.reply(404,{'error':'Not found'})
+            if self.headers.get('Content-Type')!='audio/wav': return self.reply(415,{'error':'WAV required'})
+            if not busy.acquire(False): return self.reply(429,{'error':'Busy'})
+            try:
+                self.connection.settimeout(10)
+                size=int(self.headers.get('Content-Length','0'))
+                if size!=170044: return self.reply(400,{'error':'Five-second mono WAV required'})
+                data=self.rfile.read(size)
+                if len(data)!=size: return self.reply(400,{'error':'Incomplete audio'})
+                with wave.open(io.BytesIO(data),'rb') as wav:
+                    if (wav.getnchannels(),wav.getsampwidth(),wav.getframerate(),wav.getnframes())!=(1,2,17000,85000): return self.reply(400,{'error':'Invalid WAV format'})
+                segments,_=model.transcribe(io.BytesIO(data),language='zh',beam_size=5,vad_filter=True,condition_on_previous_text=False,initial_prompt='以下是繁體中文的日常對話。')
+                text=''.join(s.text for s in segments if getattr(s,'no_speech_prob',0)<0.6 and getattr(s,'avg_logprob',0)>-1.0).strip()
+                self.reply(200,{'text':text[:2000]})
+            except (ValueError,wave.Error): self.reply(400,{'error':'Invalid audio'})
+            except Exception: self.reply(500,{'error':'Transcription failed; check local GPU/runtime setup'})
+            finally: busy.release()
+    return ThreadingHTTPServer((host,port),Handler)
+
+if __name__=='__main__':
+    from faster_whisper import WhisperModel
+    token=os.environ.get('STT_TOKEN','')
+    if len(token)<32: raise SystemExit('Set a 32+ character STT_TOKEN before starting.')
+    device=os.environ.get('STT_DEVICE','cuda');name=os.environ.get('STT_MODEL','small')
+    model=WhisperModel(name,device=device,compute_type='float16' if device=='cuda' else 'int8')
+    server=create_server(model,token,os.environ.get('STT_HOST','127.0.0.1'),int(os.environ.get('STT_PORT','8001')),device,name)
+    print('Speech service ready. Audio and transcripts are not logged.',flush=True)
+    server.serve_forever()

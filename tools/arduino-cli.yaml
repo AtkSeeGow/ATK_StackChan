@@ -1,0 +1,11 @@
+board_manager:
+  additional_urls:
+    - https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
+directories:
+  data: C:/Projects/ATK_StackChan/.tools/arduino/data
+  downloads: C:/Projects/ATK_StackChan/.tools/arduino/downloads
+  user: C:/Projects/ATK_StackChan/.tools/arduino/user
+build_cache:
+  path: C:/Projects/ATK_StackChan/.tools/arduino/cache
+updater:
+  enable_notification: false
