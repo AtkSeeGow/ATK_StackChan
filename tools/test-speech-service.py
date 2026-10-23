@@ -8,6 +8,43 @@ class Model:
         assert kwargs['language']=='zh'
         return [SimpleNamespace(text='測試文字',no_speech_prob=0.01,avg_logprob=-0.1)], None
 class SpeechTests(unittest.TestCase):
+    def test_synthesis(self):
+        calls=[]
+        def synthesize(text):
+            calls.append(text)
+            return bytes(34000)
+        token='t'*64
+        server=module.create_server(Model(),token,port=0,synthesizer=synthesize)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        base='http://127.0.0.1:'+str(server.server_port)
+        def request(value,authorized=True):
+            headers={'Content-Type':'application/json'}
+            if authorized: headers['Authorization']='Bearer '+token
+            return urllib.request.urlopen(urllib.request.Request(base+'/synthesize',data=json.dumps(value).encode(),headers=headers))
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as err: request({'text':'test'},False)
+            self.assertEqual(err.exception.code,401)
+            for value in ({'text':''},{'text':'x'*201},{'text':42},[]):
+                with self.assertRaises(urllib.error.HTTPError) as err: request(value)
+                self.assertEqual(err.exception.code,400)
+            self.assertEqual(calls,[])
+            with request({'text':'測試語音'}) as response:
+                self.assertEqual(response.read(),bytes(34000))
+                self.assertEqual(response.headers['X-Audio-Sample-Rate'],'17000')
+                self.assertEqual(response.headers['Cache-Control'],'no-store')
+            self.assertEqual(calls,['測試語音'])
+            # Engine failure must be a generic HTTP error, without input text.
+            def fail(text): raise RuntimeError('private '+text)
+            # A separate server avoids changing the active handler closure.
+            failed=module.create_server(Model(),token,port=0,synthesizer=fail)
+            failed_thread=threading.Thread(target=failed.serve_forever,daemon=True);failed_thread.start()
+            try:
+                req=urllib.request.Request('http://127.0.0.1:'+str(failed.server_port)+'/synthesize',data=b'{"text":"secret"}',headers={'Content-Type':'application/json','Authorization':'Bearer '+token})
+                with self.assertRaises(urllib.error.HTTPError) as err: urllib.request.urlopen(req)
+                self.assertEqual(err.exception.code,500)
+                self.assertNotIn(b'secret',err.exception.read())
+            finally: failed.shutdown();failed.server_close();failed_thread.join()
+        finally: server.shutdown();server.server_close();thread.join()
     def test_api(self):
         token='t'*64
         server=module.create_server(Model(),token,port=0)

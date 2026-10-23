@@ -10,5 +10,12 @@ $env:STT_PORT=[string]$speechSettings.port
 $env:STT_MODEL=$speechSettings.model
 $env:STT_DEVICE=$Device
 $env:PYTHONIOENCODING='utf-8'
+if (-not $env:HF_HOME) { $env:HF_HOME=Join-Path $PSScriptRoot '../../.tools/huggingface' }
+# NVIDIA pip wheels keep their Windows runtime DLLs inside the venv.
+$nvidiaRoot=Join-Path $PSScriptRoot '.venv/Lib/site-packages/nvidia'
+if ($Device -eq 'cuda' -and (Test-Path -LiteralPath $nvidiaRoot)) {
+    $dllDirectories=Get-ChildItem -LiteralPath $nvidiaRoot -Recurse -Filter '*.dll' | Select-Object -ExpandProperty DirectoryName -Unique
+    if ($dllDirectories) { $env:PATH=($dllDirectories -join ';')+';'+$env:PATH }
+}
 & ./.venv/Scripts/python.exe server.py
 if($LASTEXITCODE -ne 0) { throw 'Speech service failed. Check Python/CUDA libraries; CPU testing is available with ./start.ps1 -Device cpu.' }

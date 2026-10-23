@@ -2,7 +2,7 @@
 import io, os, json, wave, hmac, threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model_name='small'):
+def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model_name='small', synthesizer=None):
     if len(token) < 32:
         raise ValueError('STT_TOKEN must contain at least 32 characters')
     busy = threading.Lock()
@@ -17,9 +17,36 @@ def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model
         def do_GET(self):
             if not self.authorized(): return self.reply(401,{'error':'Unauthorized'})
             if self.path!='/health': return self.reply(404,{'error':'Not found'})
-            self.reply(200,{'ready':True,'device':device,'model':model_name})
+            self.reply(200,{'ready':True,'device':device,'model':model_name,'tts':{'enabled':synthesizer is not None,'engine':'windows-local','device':'cpu','sample_rate':17000}})
         def do_POST(self):
             if not self.authorized(): return self.reply(401,{'error':'Unauthorized'})
+            if self.path=='/synthesize':
+                if synthesizer is None: return self.reply(503,{'error':'Synthesis unavailable'})
+                if self.headers.get('Content-Type')!='application/json': return self.reply(415,{'error':'JSON required'})
+                if not busy.acquire(False): return self.reply(429,{'error':'Busy'})
+                try:
+                    self.connection.settimeout(10)
+                    size=int(self.headers.get('Content-Length','0'))
+                    if not 0<size<=4096: return self.reply(400,{'error':'Invalid request size'})
+                    data=self.rfile.read(size)
+                    if len(data)!=size: return self.reply(400,{'error':'Incomplete request'})
+                    value=json.loads(data)
+                    text=value.get('text') if isinstance(value,dict) else None
+                    if not isinstance(text,str) or not text.strip() or len(text)>200: return self.reply(400,{'error':'Text must contain 1-200 characters'})
+                    pcm=synthesizer(text)
+                    if not isinstance(pcm,bytes) or not pcm or len(pcm)%2 or len(pcm)>1020000: raise RuntimeError('Invalid synthesis output')
+                    self.send_response(200)
+                    self.send_header('Content-Type','application/octet-stream')
+                    self.send_header('Cache-Control','no-store')
+                    self.send_header('Content-Length',str(len(pcm)))
+                    self.send_header('X-Audio-Sample-Rate','17000')
+                    self.send_header('X-Audio-Channels','1')
+                    self.send_header('X-Audio-Bits','16')
+                    self.end_headers();self.wfile.write(pcm)
+                except (ValueError,UnicodeError): self.reply(400,{'error':'Invalid synthesis request'})
+                except Exception: self.reply(500,{'error':'Local synthesis failed'})
+                finally: busy.release()
+                return
             if self.path!='/transcribe': return self.reply(404,{'error':'Not found'})
             if self.headers.get('Content-Type')!='audio/wav': return self.reply(415,{'error':'WAV required'})
             if not busy.acquire(False): return self.reply(429,{'error':'Busy'})
@@ -41,10 +68,11 @@ def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model
 
 if __name__=='__main__':
     from faster_whisper import WhisperModel
+    from synthesis import synthesize
     token=os.environ.get('STT_TOKEN','')
     if len(token)<32: raise SystemExit('Set a 32+ character STT_TOKEN before starting.')
     device=os.environ.get('STT_DEVICE','cuda');name=os.environ.get('STT_MODEL','small')
     model=WhisperModel(name,device=device,compute_type='float16' if device=='cuda' else 'int8')
-    server=create_server(model,token,os.environ.get('STT_HOST','127.0.0.1'),int(os.environ.get('STT_PORT','8001')),device,name)
+    server=create_server(model,token,os.environ.get('STT_HOST','127.0.0.1'),int(os.environ.get('STT_PORT','8001')),device,name,synthesize)
     print('Speech service ready. Audio and transcripts are not logged.',flush=True)
     server.serve_forever()

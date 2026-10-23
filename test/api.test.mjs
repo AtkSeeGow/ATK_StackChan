@@ -14,6 +14,7 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
     res.setHeader('Content-Type', 'application/json');
     if(req.url==='/health') return res.end(JSON.stringify({ready:true,device:'mock',model:'mock'}));
     if(req.url==='/transcribe') {let bytes=0;for await(const chunk of req)bytes+=chunk.length;assert.equal(bytes,170044);return res.end(JSON.stringify({text:'這是測試辨識文字'}));}
+    if(req.url==='/synthesize') {assert.equal(req.headers.authorization,'Bearer '+'b'.repeat(64));for await(const chunk of req){};res.setHeader('X-Audio-Sample-Rate','17000');res.setHeader('X-Audio-Channels','1');res.setHeader('X-Audio-Bits','16');const pcm=Buffer.alloc(34000);for(let i=0;i<pcm.length;i+=2)pcm.writeInt16LE(20000,i);return res.end(pcm);}
     if (req.url === '/api/version') return res.end(JSON.stringify({version:'test'}));
     if (req.url === '/api/tags') return res.end(JSON.stringify({models:[{name:'test:4b'}]}));
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -156,5 +157,25 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
     assert.equal((await request('/api/state')).body.speech.text,'這是測試辨識文字');
     assert.equal((await uploadSpeech(speechId,Buffer.alloc(170000))).status,409);
     assert.equal((await request('/api/messages')).body.length,2); // no automatic chat submission
+    await reportAudio({id:speechId,status:'completed',peak:0,rms:0});
+    assert.equal((await request('/api/synthesis',{action:'play',text:'x'.repeat(201)})).status,400);
+    const tts=await request('/api/synthesis',{action:'play',text:'你好',volume:208,outputGain:8});assert.equal(tts.status,202);
+    const ttsId=tts.body.synthesis.id;
+    for(let i=0;i<50;i++){if((await request('/api/state')).body.synthesis.status==='queued')break;await new Promise(r=>setTimeout(r,10));}
+    const ttsFrame=await fetch(base+'/api/device/frame',{headers:bearer});
+    assert.equal(ttsFrame.headers.get('x-stackchan-playback'),ttsId);
+    assert.equal(ttsFrame.headers.get('x-stackchan-audio'),''); // Old firmware must never record on a TTS command.
+    assert.equal((await request('/api/audio',{action:'test'})).status,400);
+    assert.equal((await request('/api/speech',{action:'start'})).status,400);
+    assert.equal((await request('/api/camera',{action:'start'})).status,400);
+    assert.equal((await fetch(base+'/api/device/playback?id='+ttsId)).status,401);
+    assert.equal((await fetch(base+'/api/device/playback?id=wrong',{headers:bearer})).status,409);
+    const download=await fetch(base+'/api/device/playback?id='+ttsId,{headers:bearer});assert.equal(download.status,200);assert.equal((await download.arrayBuffer()).byteLength,34000);
+    assert.equal((await fetch(base+'/api/device/playback?id='+ttsId,{headers:bearer})).status,409);
+    assert.equal((await reportAudio({id:ttsId,status:'playback'})).status,200);
+    assert.equal((await reportAudio({id:ttsId,status:'completed'})).status,200);
+    assert.equal((await request('/api/state')).body.synthesis.status,'completed');
+    assert.equal((await reportAudio({id:ttsId,status:'completed'})).status,409);
+    assert.equal((await request('/api/messages')).body.length,2); // Manual playback does not add chat history.
   } finally { await stop(); await new Promise(resolve => mock.close(resolve)); rmSync(folder, { recursive:true,force:true }); }
 });

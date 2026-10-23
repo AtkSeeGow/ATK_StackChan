@@ -8,6 +8,7 @@ constexpr uint32_t audioRate = 17000; // same rate as the official recording exa
 constexpr size_t audioCount = audioRate*2; // two seconds, mono
 size_t audioLength=audioCount;
 bool speechCapture=false;
+uint32_t audioTimeoutMs=7000;
 int audioPeak = 0; double audioRms = 0;
 int audioVolume = 208;
 int audioOutputGain = 4;
@@ -38,6 +39,7 @@ void startAudio(const char* id, int volume, bool speakerOnly, int outputGain, bo
   audioVolume=constrain(volume,32,255);
   audioOutputGain=outputGain==8 ? 8 : 4;
   speechCapture=speech; audioLength=speech ? audioRate*5 : audioCount;
+  audioTimeoutMs=7000;
   cameraControl("C|0");
   if(cameraBusReleased) { M5.In_I2C.begin(); cameraBusReleased=false; }
   audioSamples=(int16_t*)ps_malloc(audioLength*sizeof(int16_t));
@@ -63,8 +65,27 @@ void startAudio(const char* id, int volume, bool speakerOnly, int outputGain, bo
   audioAt=millis(); audioStage=1; audioReport("tone");
 }
 void serviceAudio() {
+  if(networkEnabled && !audioStage) {
+    NetworkPlayback playback{};
+    if(xQueueReceive(networkPlayback,&playback,0)==pdTRUE) {
+      if(!strcmp(lastAudioId,playback.id)) {free(playback.data);return;}
+      strcpy(lastAudioId,playback.id);audioPeak=0;audioRms=0;
+      ampVolume=ampSystem=ampI2s=ampBoost=-1;
+      if(!playback.data || !playback.length || playback.length>1020000 || playback.length%2 || millis()-playback.received>5000) {free(playback.data);audioReport("download_failed");return;}
+      cameraControl("C|0");
+      if(cameraBusReleased) {M5.In_I2C.begin();cameraBusReleased=false;}
+      M5.Mic.end();M5.Speaker.end();
+      audioSamples=(int16_t*)playback.data;audioLength=playback.length/2;
+      audioVolume=playback.volume;audioOutputGain=playback.outputGain;
+      auto cfg=M5.Speaker.config();cfg.task_priority=5;cfg.dma_buf_count=16;cfg.magnification=audioOutputGain;M5.Speaker.config(cfg);
+      M5.Speaker.setVolume(audioVolume);
+      if(!beginAudioOutput() || !M5.Speaker.playRaw(audioSamples,audioLength,audioRate,false)) {finishAudio("playback_failed");return;}
+      audioStage=3;audioAt=millis();audioTimeoutMs=(uint32_t)(playback.length*1000/34000)+5000;
+      audioReport("playback");
+    }
+  }
   if(!audioStage) return;
-  if(millis()-audioAt>7000) { finishAudio("timeout"); return; }
+  if(millis()-audioAt>audioTimeoutMs) { finishAudio("timeout"); return; }
   if(audioStage==1 && millis()-audioAt>1000) {
     M5.Speaker.end();
     if(!M5.Mic.begin() || !M5.Mic.record(audioSamples,audioLength,audioRate,false)) { finishAudio("microphone_failed"); return; }

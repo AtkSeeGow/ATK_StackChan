@@ -1,8 +1,19 @@
 # 在 5070 Windows Server 啟動語音辨識
 
-裝置及本機主機端已完成程式串接，真正的語音辨識服務仍需在 `192.168.0.100` 啟動。Ollama 繼續使用原本 11434；語音服務獨立使用 8001，不修改 Ollama。
+語音辨識已在 `192.168.0.100` 以 CUDA/small 啟動，使用者確認裝置五秒中文辨識正確、約 5～15 秒顯示結果。詳細驗證範圍見 `HANDOFF_5070.md`。Ollama 繼續使用原本 11434；語音服務獨立使用 8001，不修改 Ollama。本機 CPU 合成 API 已加入，裝置播放部署接續見 `TTS_SETUP.md`。
 
 ## Server 操作
+
+2026-10-24 .100 已部署：可使用既有 conda 的 Python 建立隔離環境，不必修改 base 或 HardwareAgent 套件。在本 repo 根目錄可執行：
+
+```powershell
+.\services\speech\setup.ps1 -Python C:\Users\atkse\.conda\envs\HardwareAgent\python.exe -Gpu
+.\services\speech\start.ps1
+```
+
+`-Gpu` 安裝 venv 專用 CUDA 12 cuBLAS／cuDNN 9；啟動腳本自動將 NVIDIA wheel DLL 目錄加入程序 PATH，模型預設快取於 repo `.tools/huggingface`（可用既有 HF_HOME 覆寫）。實測 small CUDA float16 已完成五秒合成音訊強制推論，首輪 12.291 秒；真人裝置中文與跨主機結果請以 `HANDOFF_5070.md` 最新實測為準。此部署尚未設定開機自動啟動。
+
+faster-whisper 1.2.1 的 WAV 解碼與 PyAV 19 不相容（`metadata_errors` 參數已移除），requirements 已限制 `av<19`，此機實測使用 18.1.0；請依 requirements 安裝，避免單獨升級 PyAV。修正後五秒合成靜音 WAV API 回覆 HTTP 200、空文字。
 
 若是直接在 Server 拉 Git，先讀 `HANDOFF_5070.md`：`settings.local.json` 不在 Git 內，必須另行私下轉移。已有配對設定時勿重新產生；沒有時可跑 `./configure.ps1`，之後需同步 .199 的語音金鑰。`settings.example.json` 是不含金鑰的可提交範本。安裝後可用 `./diagnose.ps1` 檢查 GPU／DLL；它不等於實際辨識測試。
 

@@ -22,6 +22,8 @@ QueueHandle_t networkImages = nullptr;
 QueueHandle_t networkAudio = nullptr;
 struct NetworkSpeech { uint8_t* data; size_t length; char id[9]; uint32_t captured; };
 QueueHandle_t networkSpeech = nullptr;
+struct NetworkPlayback { uint8_t* data; size_t length; char id[9]; int volume; int outputGain; uint32_t received; };
+QueueHandle_t networkPlayback = nullptr;
 bool networkEnabled = false;
 bool networkHttpDev = false;
 bool beginDeviceRequest(HTTPClient& request, NetworkClient& plain, NetworkClientSecure& secure, const String& url) {
@@ -38,6 +40,7 @@ void networkTask(void*) {
   String base(STACKCHAN_SERVER_URL);
   while (base.endsWith("/")) base.remove(base.length()-1);
   uint32_t lastPoll = millis()-2000, lastReconnect = millis();
+  char lastPlaybackId[9]="";
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
       if (millis()-lastReconnect > 30000) { lastReconnect = millis(); WiFi.reconnect(); }
@@ -51,7 +54,7 @@ void networkTask(void*) {
       HTTPClient request; request.setConnectTimeout(3000); request.setTimeout(3000);
       request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
       if (beginDeviceRequest(request,plain,client,base+"/api/device/frame")) {
-        const char* headers[] = {"X-StackChan-Camera","X-StackChan-Audio","X-StackChan-Volume","X-StackChan-Audio-Mode","X-StackChan-Output-Gain"}; request.collectHeaders(headers,5);
+        const char* headers[] = {"X-StackChan-Camera","X-StackChan-Audio","X-StackChan-Volume","X-StackChan-Audio-Mode","X-StackChan-Output-Gain","X-StackChan-Playback","X-StackChan-Playback-Volume","X-StackChan-Playback-Gain"}; request.collectHeaders(headers,8);
         request.addHeader("Authorization",String("Bearer ")+STACKCHAN_DEVICE_TOKEN);
         if (request.GET() == 200) {
           String text = request.getString(); text.trim();
@@ -64,6 +67,39 @@ void networkTask(void*) {
             incoming.speech=request.header("X-StackChan-Audio-Mode")=="speech";
             incoming.outputGain=request.header("X-StackChan-Output-Gain").toInt();
             xQueueOverwrite(networkFrames,&incoming);
+            String playbackId=request.header("X-StackChan-Playback");
+            if(playbackId.length()==8 && strspn(playbackId.c_str(),"0123456789abcdef")==8 && strcmp(lastPlaybackId,playbackId.c_str())) {
+              NetworkPlayback playback{};
+              playbackId.toCharArray(playback.id,sizeof(playback.id));
+              strcpy(lastPlaybackId,playback.id); // Each id is attempted only once, including failed downloads.
+              playback.volume=constrain(request.header("X-StackChan-Playback-Volume").toInt(),32,255);
+              playback.outputGain=request.header("X-StackChan-Playback-Gain")=="4" ? 4 : 8;
+              request.end();
+              NetworkClient pcmPlain; NetworkClientSecure pcmSecure; HTTPClient download;
+              download.setConnectTimeout(2000);download.setTimeout(5000);download.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+              if(beginDeviceRequest(download,pcmPlain,pcmSecure,base+"/api/device/playback?id="+playbackId)) {
+                const char* pcmHeaders[]={"X-Audio-Sample-Rate"};download.collectHeaders(pcmHeaders,1);
+                download.addHeader("Authorization",String("Bearer ")+STACKCHAN_DEVICE_TOKEN);
+                int code=download.GET(), length=download.getSize();
+                if(code==200 && download.header("X-Audio-Sample-Rate")=="17000" && length>0 && length<=1020000 && length%2==0) {
+                  playback.data=(uint8_t*)ps_malloc(length);
+                  if(playback.data) {
+                    size_t received=0;uint32_t started=millis();auto* stream=download.getStreamPtr();
+                    while(received<(size_t)length && millis()-started<10000) {
+                      int available=stream->available();
+                      if(available>0) {int read=stream->read(playback.data+received,min((size_t)available,(size_t)length-received));if(read>0)received+=read;else break;}
+                      else if(!download.connected())break;
+                      else vTaskDelay(pdMS_TO_TICKS(5));
+                    }
+                    if(received==(size_t)length)playback.length=received;
+                    else {free(playback.data);playback.data=nullptr;}
+                  }
+                }
+                download.end();
+              }
+              playback.received=millis();
+              if(xQueueSend(networkPlayback,&playback,0)!=pdTRUE)free(playback.data);
+            }
           }
         }
         request.end();
@@ -137,12 +173,14 @@ void startNetwork() {
   networkImages = xQueueCreate(1,sizeof(NetworkImage));
   networkAudio = xQueueCreate(1,sizeof(NetworkAck));
   networkSpeech = xQueueCreate(1,sizeof(NetworkSpeech));
-  if (!networkFrames || !networkAcks || !networkImages || !networkAudio || !networkSpeech) {
+  networkPlayback = xQueueCreate(1,sizeof(NetworkPlayback));
+  if (!networkFrames || !networkAcks || !networkImages || !networkAudio || !networkSpeech || !networkPlayback) {
     if (networkFrames) vQueueDelete(networkFrames);
     if (networkAcks) vQueueDelete(networkAcks);
     if (networkImages) vQueueDelete(networkImages);
     if (networkAudio) vQueueDelete(networkAudio);
     if (networkSpeech) vQueueDelete(networkSpeech);
+    if (networkPlayback) vQueueDelete(networkPlayback);
     networkFrames = nullptr; networkAcks = nullptr; return;
   }
   networkEnabled = true;
@@ -152,6 +190,7 @@ void startNetwork() {
     vQueueDelete(networkImages);
     vQueueDelete(networkAudio);
     vQueueDelete(networkSpeech);
+    vQueueDelete(networkPlayback);
     networkFrames = nullptr; networkAcks = nullptr;
   }
 }

@@ -9,6 +9,7 @@ import { RemoteDevice, sameSecret } from './remote-device.mjs';
 import { CameraState } from './camera.mjs';
 import { VisionWorker } from './vision-worker.mjs';
 import { SpeechService } from './speech.mjs';
+import { SynthesisPlayback } from './synthesis.mjs';
 import { defaults, newState, reconcile, timerAction, setPresence, validateSettings, dayKey } from './core.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -45,6 +46,7 @@ const state = getValue('state', newState());
 const camera = new CameraState();
 const vision = new VisionWorker(root);
 const speech = new SpeechService(process.env.STACKCHAN_STT_URL,process.env.STACKCHAN_STT_TOKEN);
+const synthesis = new SynthesisPlayback(process.env.STACKCHAN_STT_URL,process.env.STACKCHAN_STT_TOKEN);
 let speechUploading=false;
 let cameraEpoch = 0, cameraUploadBusy = false;
 let audio = {id:'',status:'idle',peak:0,rms:0,requestedAt:0,volume:208,mode:'test'};
@@ -62,7 +64,7 @@ function snapshot() {
   }
   if (reconcile(state, settings)) saveState();
   const now = Date.now();
-  return { ...state, settings, now, todayCompleted: state.completed[dayKey(now)] || 0, chatBusy, audio, speech:speech.snapshot(), camera:camera.snapshot(), device: transport === 'wifi' ? remoteDevice.snapshot() : device?.snapshot() || null,
+  return { ...state, settings, now, todayCompleted: state.completed[dayKey(now)] || 0, chatBusy, audio, speech:speech.snapshot(), synthesis:synthesis.snapshot(), camera:camera.snapshot(), device: transport === 'wifi' ? remoteDevice.snapshot() : device?.snapshot() || null,
     timer: { ...state.timer, remainingMs: state.timer.status === 'running' ? Math.max(0, state.timer.deadline - now) : state.timer.remainingMs } };
 }
 const ticker = setInterval(() => { snapshot(); }, 500);
@@ -116,12 +118,17 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith('/api/device/')) {
       if (!remoteDevice.authorized(req.headers.authorization)) return json(res,401,{error:'裝置認證失敗。'});
       if (req.method === 'GET' && route === '/api/device/frame') {
+        const playback=synthesis.snapshot();
+        res.setHeader('X-StackChan-Playback',playback.status==='queued'?playback.id:'');
+        res.setHeader('X-StackChan-Playback-Volume',String(playback.volume || 208));
+        res.setHeader('X-StackChan-Playback-Gain',String(playback.outputGain || 8));
         res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','X-StackChan-Camera':camera.enabled ? '1' : '0','X-StackChan-Audio':audio.status==='queued' && Date.now()-audio.requestedAt<15000 ? audio.id : '', 'X-StackChan-Volume':String(audio.volume),'X-StackChan-Audio-Mode':audio.mode,'X-StackChan-Output-Gain':String(audio.outputGain || 4)});
         return res.end(remoteDevice.issue(snapshot(),currentExpression()));
       }
       if(req.method==='POST' && route==='/api/device/audio') {
         if(!(req.headers['content-type'] || '').startsWith('application/json')) return json(res,415,{error:'需要 JSON。'});
         const report=await body(req);
+        if(report.id===synthesis.job.id && synthesis.job.id) {const accepted=synthesis.report(report);return json(res,accepted?200:409,{accepted});}
         if(!audio.id || report.id!==audio.id || Date.now()-audio.requestedAt>20000 || !['tone','recording','playback','completed','allocation_failed','speaker_failed','microphone_failed','playback_failed','upload_failed','timeout'].includes(report.status) || !Number.isInteger(report.peak) || report.peak<0 || report.peak>32768 || !Number.isFinite(report.rms) || report.rms<0 || report.rms>32768) return json(res,409,{error:'無效音訊回報。'});
         const amp=report.amp && ['volume','system','i2s','boost','magnification','channel'].every(key=>Number.isInteger(report.amp[key]) && report.amp[key]>=-1 && report.amp[key]<=65535) ? Object.fromEntries(['volume','system','i2s','boost','magnification','channel'].map(key=>[key,report.amp[key]])) : null;
         audio={...audio,status:report.status,peak:report.peak,rms:report.rms,amp};
@@ -130,6 +137,14 @@ const server = http.createServer(async (req, res) => {
           if(report.status.endsWith('_failed') || report.status==='timeout') {speech.job.status='failed';speech.job.error='裝置收音失敗，請重試。';}
         }
         return json(res,200,{accepted:true});
+      }
+      if(req.method==='GET' && route==='/api/device/playback') {
+        const id=new URL(req.url,`http://${host}`).searchParams.get('id');
+        try{
+          const pcm=synthesis.take(id);
+          res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Length':pcm.length,'Cache-Control':'no-store','X-Audio-Sample-Rate':'17000'});
+          return res.end(pcm);
+        }catch{return json(res,409,{error:'播放指令已過期或重複。'});}
       }
       if(req.method==='POST' && route==='/api/device/speech') {
         const id=req.headers['x-stackchan-audio-id'];
@@ -198,10 +213,25 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && route.startsWith('/api/')) {
       if (!(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: '需要 JSON 資料。' });
       const input = await body(req);
+      if(route==='/api/synthesis') {
+        if(input.action!=='play'||transport!=='wifi'||!remoteDevice.snapshot().connected)throw new Error('請先連接 Wi-Fi 裝置。');
+        synthesis.snapshot();if(synthesis.busy)throw new Error('上一段語音仍在處理。');
+        if(['queued','recording','transcribing'].includes(speech.snapshot().status)||(audio.requestedAt && Date.now()-audio.requestedAt<20000 && !['completed','timeout'].includes(audio.status) && !audio.status.endsWith('_failed')))throw new Error('請等待目前錄音或播放結束。');
+        if(typeof input.text!=='string'||!input.text.trim()||input.text.length>200)throw new Error('朗讀文字需介於 1～200 字。');
+        const volume=input.volume ?? 208, outputGain=input.outputGain ?? 8;
+        if(!Number.isInteger(volume)||volume<32||volume>255||![4,8].includes(outputGain))throw new Error('播放音量設定不正確。');
+        cameraEpoch++;camera.enable(false);vision.close();
+        void synthesis.start(randomBytes(4).toString('hex'),input.text,volume,outputGain).catch(()=>synthesis.finish('failed','無法開始語音合成。'));
+        return json(res,202,snapshot());
+      }
+      if(['/api/speech','/api/audio'].includes(route) || (route==='/api/camera' && input.action==='start')) {
+        synthesis.snapshot();if(synthesis.busy)throw new Error('請等待合成語音播放完成。');
+      }
       if(route==='/api/speech') {
         if(input.action!=='start' || transport!=='wifi' || !remoteDevice.snapshot().connected) throw new Error('請先連接 Wi-Fi 裝置。');
         if(audio.requestedAt && Date.now()-audio.requestedAt<15000) throw new Error('請等目前音訊測試完成。');
         await speech.health();
+        synthesis.snapshot();if(synthesis.busy || ['queued','recording','transcribing'].includes(speech.snapshot().status))throw new Error('另一段語音已開始，請等候完成。');
         const id=randomBytes(4).toString('hex');speech.start(id);
         cameraEpoch++;camera.enable(false);vision.close();
         audio={id,status:'queued',peak:0,rms:0,requestedAt:Date.now(),volume:208,mode:'speech',outputGain:8};

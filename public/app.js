@@ -27,9 +27,15 @@ function render() {
   $('resetTimer').disabled = pendingAction;
   const cam = state.camera;
   const audio = state.audio;
+  const synthesisBusy=['synthesizing','queued','downloading','playback'].includes(state.synthesis?.status);
+  if(state.synthesis){
+    const labels={idle:'尚未播放',synthesizing:'正在合成語音',queued:'等待裝置下載',downloading:'裝置正在下載音訊',playback:'裝置播放中',completed:'播放流程完成，請確認聽感',failed:state.synthesis.error,timeout:'播放逾時，請確認裝置韌體與連線'};
+    $('synthesisStatus').textContent=labels[state.synthesis.status] || '等待播放';
+    $('synthesisPlay').disabled=pendingAction||synthesisBusy||!state.synthesis.configured||!state.device?.connected||state.device?.transport!=='wifi'||['queued','recording','transcribing'].includes(state.speech?.status);
+  }
   if(state.speech) {
     const s=state.speech;
-    $('speechStart').disabled=pendingAction || !s.configured || !state.device?.connected || state.device?.transport!=='wifi' || ['queued','recording','transcribing'].includes(s.status);
+    $('speechStart').disabled=pendingAction || synthesisBusy || !s.configured || !state.device?.connected || state.device?.transport!=='wifi' || ['queued','recording','transcribing'].includes(s.status);
     $('speechStatus').textContent=({idle:s.configured ? '準備收音五秒' : '等待 Server 語音服務設定',queued:'等待裝置收音',recording:'收音中，請說話（五秒）',transcribing:'正在 Server 轉成文字',completed:'辨識完成，請確認文字',empty:'未辨識到明確人聲，請重試',failed:s.error,timeout:'裝置錄音未送達，請重試'})[s.status] || s.status;
     $('speechText').textContent=s.text || '';
     $('speechUse').disabled=!s.text;
@@ -37,7 +43,7 @@ function render() {
   if(audio) {
     const label={idle:'尚未測試',queued:'等待裝置開始',tone:'播放短提示音，準備說話',recording:'正在收音兩秒，請說話',playback:'正在裝置回放',completed:'錄音與回放流程完成，請確認聽感',timeout:'測試逾時，請確認裝置連線'}[audio.status] || '音訊測試失敗，請重試';
     $('audioStatus').textContent=`${audio.mode==='speaker' ? '喇叭測試（不收音） · ' : ''}${audio.mode==='speaker' && audio.status==='completed' ? '固定測試音播放流程完成，請確認音量' : label} · 峰值 ${audio.peak} · RMS ${audio.rms}`;
-    $('audioTest').disabled=pendingAction || (audio.requestedAt && state.now-audio.requestedAt<15000) || state.device?.transport!=='wifi' || !state.device?.connected;
+    $('audioTest').disabled=pendingAction || synthesisBusy || (audio.requestedAt && state.now-audio.requestedAt<15000) || state.device?.transport!=='wifi' || !state.device?.connected;
     $('speakerTest').disabled=$('audioTest').disabled;
   }
   if (cam) {
@@ -46,7 +52,7 @@ function render() {
     $('cameraReason').textContent = cam.reason;
     $('cameraEvidence').textContent = `臉部：${cam.faces} · 空位校準：${cam.baseline ? '已建立（僅記憶體）' : '尚未建立'} · 目前來源：${state.settings.presenceSource === 'camera' ? '相機' : '手動'}`;
     $('cameraAuto').checked = state.settings.presenceSource === 'camera';
-    $('cameraStart').disabled = cam.enabled || pendingAction;
+    $('cameraStart').disabled = cam.enabled || pendingAction || synthesisBusy;
     $('cameraStop').disabled = !cam.enabled || pendingAction;
     $('cameraCalibrate').disabled = !cam.fresh || pendingAction;
     $('cameraPreview').hidden = !cam.fresh;
@@ -104,6 +110,8 @@ $('audioTest').onclick = () => action('audio',{action:'test',volume:Number($('au
 $('speakerTest').onclick = () => action('audio',{action:'speaker',volume:Number($('audioVolume').value),outputGain:Number($('audioOutputGain').value)});
 $('audioVolume').oninput = event => { $('audioVolumeValue').textContent=`${event.target.value} / 255`; };
 $('speechStart').onclick=()=>action('speech',{action:'start'});
+$('synthesisPlay').onclick=()=>action('synthesis',{action:'play',text:$('synthesisText').value,volume:Number($('audioVolume').value),outputGain:Number($('audioOutputGain').value)});
+$('synthesisUseReply').onclick=async()=>{try{const messages=await api('messages');const latest=messages.findLast(m=>m.role==='assistant');if(!latest)return notice('尚無 AI 回覆可朗讀。');if(latest.content.length>200)return notice('回覆超過 200 字，請自行貼上要朗讀的段落。');$('synthesisText').value=latest.content;}catch{notice('無法取得最新回覆。');}};
 $('speechUse').onclick=()=>{if(state?.speech?.text){$('chatInput').value=state.speech.text;$('chatInput').focus();}};
 $('speechCheck').onclick=async()=>{try{const h=await api('speech/health');$('speechHealth').textContent=h.connected ? `語音服務已連線 · ${h.device} · ${h.model}` : h.error;}catch{$('speechHealth').textContent='語音服務無法連線';}};
 $('cameraStop').onclick = () => action('camera',{action:'stop'});

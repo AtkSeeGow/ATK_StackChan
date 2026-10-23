@@ -1,10 +1,37 @@
 # 5070 主機接手紀錄
 
-更新：2026-10-24。接手時先核對此文件，再讀 `SPEECH_SETUP.md`。本次使用者決定先停在這一階段，未在 5070 Server 安裝任何新服務。
+更新：2026-10-24。接手時先核對此文件，再讀 `SPEECH_SETUP.md`。GPU STT 與裝置五秒中文基本端到端驗收已通過；本機 TTS API 已實測，裝置合成語音播放尚未完成。下方較早的「未部署」描述為歷史紀錄，以本節最新實測為準。
+
+## .100 部署實測（2026-10-24）
+
+- IP 已實查為 Wi-Fi `192.168.0.100`；RTX 5070、12227 MiB VRAM，驅動 591.86。nvidia-smi 的 CUDA 13.1 是驅動支援資訊，服務實際使用 CUDA 12 pip runtime。
+- 已有 Anaconda `C:\ProgramData\anaconda3`（base Python 3.13.9），以及 `C:\Users\atkse\.conda\envs\HardwareAgent`（Python 3.12.13）；兩者未加入本次 shell PATH。**不要因 `python` 指向 WindowsApps 別名而判定未安裝 Python。** 未另外安裝系統 Python。
+- 使用 HardwareAgent 的 Python 建立 `services/speech/.venv`，未修改該 conda 環境的套件。使用者已私下放入既有 `settings.local.json`，host/port/model 與金鑰長度檢查通過，未輸出金鑰；跨主機配對仍需實測。
+- 安裝版本：faster-whisper 1.2.1、CTranslate2 4.8.3、nvidia-cublas-cu12 12.9.2.10、nvidia-cudnn-cu12 9.27.0.42、nvidia-cuda-nvrtc-cu12 12.9.86。DLL 位於 venv 的 `Lib/site-packages/nvidia/**/bin`，start.ps1 將其加入本程序 PATH。
+- small 權重已下載至專案 `.tools/huggingface`；start.ps1 預設沿用此快取。服務本次已啟動 `192.168.0.100:8001`，有金鑰的本機 health 回覆 ready=true、device=cuda、model=small。這不是完整驗收；重開機後需重新啟動，尚無自動啟動設定。
+- **真實 GPU 運算已實測**：直接載入 small，裝置 cuda、float16，五秒合成 440 Hz 音訊、關閉 VAD 以強制推論，完整消耗 segments，首輪 12.291 秒成功。這不是人聲準確度測試，也不是裝置全流程；合成內容不作逐字稿品質依據。
+- Node v24.16.0 的 13 項測試與 Python 1 項 mock API 測試通過；不將它們當 GPU／裝置驗收。
+- 實際 HTTP WAV 合成靜音測試發現 PyAV 19.0.2 移除 `metadata_errors`，與 faster-whisper 1.2.1 不相容；已將 requirements 限制 `av>=11,<19`，安裝 18.1.0 並重啟服務。重測五秒 17 kHz WAV：HTTP 200、空文字、0.234 秒；這是實際模型 API／VAD 靜音測試，不是真人／裝置測試。
+- .100 → .199:3000 TCP 兩次逾時（含允許區網的執行環境），使用者表示 .199 已啟動。此結果不能直接證明反向 .199 → .100:8001 不通；已請使用者從 .199 網頁檢查語音服務並準備五秒中文錄音。尚未變更防火牆。
+- 使用者於 .199 網頁按「檢查語音服務」回報成功，確認實際使用方向 .199 → .100:8001 的網路與金鑰驗證通過。先前反向 .100 → .199:3000 逾時不影響此項成功結果。
+- 使用者回報 .199 網頁恢復、health 顯示 cuda/small，已完成裝置五秒收音並提供中文文字（未將逐字稿寫入此文件）。暫按網頁辨識結果理解；仍需確認是否符合原句與等待時間，不能將佔位時間當實測值。
+- 本輪重新核對：8001 監聽程序 PID 21688，同一 PID 出現在 nvidia-smi GPU 程序清單；由 speech venv 啟動，Windows venv 子程序顯示其 conda 基底 Python 路徑屬正常現象。服務設定 CUDA、small，程式沒有自動 CPU fallback。WDDM 回覆顯存占用 N/A，未取得本次請求的獨立 GPU 計時。
+- 服務仍在執行，未見新增 console 錯誤；但服務刻意不記錄請求／逐字稿，且捕捉推論例外只回傳 HTTP 錯誤，沒有逐筆追蹤可回溯。因此不能僅憑無 console 輸出宣稱此筆完全無錯；需配合網頁成功結果。
+- 使用者後續確認本次辨識內容正確，收音結束後約 5～15 秒顯示文字，屬使用者估計區間而非 Server 精確計時。GPU 實測、跨主機連線及裝置五秒中文基本端到端驗收通過；真人靜音／重試／服務失聯仍未完成，不將基本成功擴大為完整穩定性驗收。
+
+## 本機語音合成接續（2026-10-24）
+
+- 使用者已授權 STT 驗收通過後接續 TTS 與裝置播放。採用此機既有 Windows zh-TW 語音（Hanhan），本機 CPU 合成，不使用雲端，不宣稱 TTS 使用 GPU。
+- 新增 `services/speech/synthesis.py`、`synthesize.ps1`；透過標準輸入傳文字，標準輸出取 PCM，音訊不落盤、不直接播放。使用 System.Speech 的記憶體音訊串流，17 kHz、16-bit、單聲道。
+- 現有語音服務新增帶相同私有金鑰的 `POST /synthesize`，JSON `text` 限 1～200 字，輸出最長三十秒 PCM，與 STT 共用忙碌鎖；失敗不回傳內部例外或輸入文字。health 新增 tts metadata，STT cuda/small 保持原設定。
+- 服務已重啟並實測合成 API HTTP 200：固定中文測試句產生 117186 bytes、3.447 秒音訊，本輪 HTTP 耗時 0.336 秒。這只驗證產生格式與資料，不代表音色／裝置聽感驗收。Windows 語音引擎需在可存取本機語音 COM 的正常使用者環境執行；受限沙箱曾無法列舉語音，正常環境實測成功。
+- 最新 Node 14 項、Python 2 項測試通過；涵蓋合成金鑰、文字限制、PCM 大小／格式、峰值衰減、下載過期／去重、播放狀態、音訊互斥與錯誤隱私。`node tools/check-synthesis.mjs` 已在 .100 對真實 API 通過，格式 17k/mono/16bit、peak=25404；尚未從 .199 執行。
+- **裝置播放原始碼已完成、尚未編譯／部署／實機驗證**：新增 `synthesis.mjs` 管理 .199 記憶體播放工作，`server.mjs` 提供獨立下載指令與裝置金鑰端點，網頁加入手動合成播放／帶入最新 AI 回覆按鈕。韌體 `NetworkTransport.h` 新增 PSRAM 音訊下載與去重，`AudioProbe.h` 新增下載後播放與依長度逾時、釋放記憶體。舊韌體忽略獨立播放 header，不誤觸收音。
+- 使用者確認 USB 在 .199 COM4，.199 可建置並僅刷 `0x20000` 應用槽；授權先完成原始碼與交接，再由 .199 編譯／刷入／驗證。.100 未安裝 Arduino 工具鏈，沒有進行韌體編譯或刷寫。詳細部署、回復及驗證步驟見 `TTS_SETUP.md`。沒有搬移 .199 服務。
 
 ## 下一次要完成什麼
 
-在 **192.168.0.100 的 Windows RTX 5070 主機**啟動本機語音辨識，驗證裝置五秒錄音能轉成文字。先完成實際語音辨識驗收，再規劃語音合成。CPU 可作排查，但須明確標示，不能當作 GPU 完成。
+下一步由 **.199** 依 `TTS_SETUP.md` 合併交接程式、檢查真實合成 API、編譯並僅刷寫 COM4 的 `0x20000` 應用槽，恢復 Wi-Fi ACK 後驗證裝置中文播放。STT 基本端到端已通過，仍需補靜音／重試／失聯；TTS 的音色、裝置播放及延遲尚未驗收。.100 的語音服務維持啟動。
 
 ## 主機與裝置分工
 
