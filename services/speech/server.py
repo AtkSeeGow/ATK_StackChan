@@ -17,7 +17,9 @@ def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model
         def do_GET(self):
             if not self.authorized(): return self.reply(401,{'error':'Unauthorized'})
             if self.path!='/health': return self.reply(404,{'error':'Not found'})
-            self.reply(200,{'ready':True,'device':device,'model':model_name,'tts':{'enabled':synthesizer is not None,'engine':'windows-local','device':'cpu','sample_rate':17000}})
+            tts={'enabled':synthesizer is not None,'engine':'windows-local','device':'cpu','sample_rate':17000}
+            if hasattr(synthesizer,'metadata'): tts.update(synthesizer.metadata())
+            self.reply(200,{'ready':True,'device':device,'model':model_name,'tts':tts})
         def do_POST(self):
             if not self.authorized(): return self.reply(401,{'error':'Unauthorized'})
             if self.path=='/synthesize':
@@ -73,6 +75,15 @@ if __name__=='__main__':
     if len(token)<32: raise SystemExit('Set a 32+ character STT_TOKEN before starting.')
     device=os.environ.get('STT_DEVICE','cuda');name=os.environ.get('STT_MODEL','small')
     model=WhisperModel(name,device=device,compute_type='float16' if device=='cuda' else 'int8')
-    server=create_server(model,token,os.environ.get('STT_HOST','127.0.0.1'),int(os.environ.get('STT_PORT','8001')),device,name,synthesize)
+    if os.environ.get('TTS_ENGINE','windows')=='character':
+        from character import CharacterSynthesizer
+        synthesizer=CharacterSynthesizer(lambda text:synthesize(text,timeout=8))
+        try: synthesizer.start()
+        except Exception: print('Character TTS unavailable; Windows fallback active.',flush=True)
+    else: synthesizer=synthesize
+    server=create_server(model,token,os.environ.get('STT_HOST','127.0.0.1'),int(os.environ.get('STT_PORT','8001')),device,name,synthesizer)
     print('Speech service ready. Audio and transcripts are not logged.',flush=True)
-    server.serve_forever()
+    try: server.serve_forever()
+    finally:
+        server.server_close()
+        if hasattr(synthesizer,'close'): synthesizer.close()

@@ -1,4 +1,4 @@
-param([ValidateSet('cuda','cpu')][string]$Device='cuda')
+param([ValidateSet('cuda','cpu')][string]$Device='cuda', [ValidateSet('windows','character')][string]$TtsEngine='windows')
 $ErrorActionPreference='Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $settingsPath=Join-Path $PSScriptRoot 'settings.local.json'
@@ -9,6 +9,7 @@ $env:STT_HOST=$speechSettings.host
 $env:STT_PORT=[string]$speechSettings.port
 $env:STT_MODEL=$speechSettings.model
 $env:STT_DEVICE=$Device
+$env:TTS_ENGINE=$TtsEngine
 $env:PYTHONIOENCODING='utf-8'
 if (-not $env:HF_HOME) { $env:HF_HOME=Join-Path $PSScriptRoot '../../.tools/huggingface' }
 # NVIDIA pip wheels keep their Windows runtime DLLs inside the venv.

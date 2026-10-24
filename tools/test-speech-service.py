@@ -1,13 +1,84 @@
-import unittest, importlib.util, pathlib, threading, urllib.request, urllib.error, json, io, wave
+import unittest, importlib.util, pathlib, threading, urllib.request, urllib.error, json, io, wave, queue, base64
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 module_path=pathlib.Path(__file__).resolve().parents[1]/'services'/'speech'/'server.py'
 spec=importlib.util.spec_from_file_location('speech_server',module_path)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+character_spec=importlib.util.spec_from_file_location('character',module_path.with_name('character.py'))
+character=importlib.util.module_from_spec(character_spec);character_spec.loader.exec_module(character)
 class Model:
     def transcribe(self,data,**kwargs):
         assert kwargs['language']=='zh'
         return [SimpleNamespace(text='測試文字',no_speech_prob=0.01,avg_logprob=-0.1)], None
 class SpeechTests(unittest.TestCase):
+    def test_character_startup_protocol(self):
+        synth=character.CharacterSynthesizer(Mock())
+        process=Mock();process.poll.return_value=None
+        process.stdout=io.StringIO('{"ready":true}\n');process.stdin=io.StringIO()
+        with patch.object(character.subprocess,'Popen',return_value=process) as spawn, patch.dict(character.os.environ,{'STT_TOKEN':'private-test-token'}):
+            synth.start()
+            self.assertNotIn('STT_TOKEN',spawn.call_args.kwargs['env'])
+            self.assertEqual(synth.metadata()['engine'],'qwen3-local')
+            synth.close()
+        process=Mock();process.poll.return_value=None
+        process.stdout=io.StringIO('{"error":"private details"}\n');process.stdin=io.StringIO()
+        with patch.object(character.subprocess,'Popen',return_value=process):
+            with self.assertRaisesRegex(RuntimeError,'^Character startup failed$'):synth.start()
+        self.assertIsNone(synth.process)
+
+    def test_character_protocol_and_fallback(self):
+        fallback=Mock(return_value=b'\x01\x00')
+        synth=character.CharacterSynthesizer(fallback,timeout=0)
+        def ready(value=None):
+            process=Mock();process.poll.return_value=None
+            synth.process=process;synth.messages=queue.Queue()
+            if value is not None:synth.messages.put(value)
+            return process
+        process=ready({'pcm':base64.b64encode(b'\x02\x00').decode()})
+        self.assertEqual(synth('測試'),b'\x02\x00')
+        fallback.assert_not_called()
+        self.assertEqual(synth.metadata()['last_engine'],'qwen3-local')
+        # Timeout destroys the worker, then falls back without stale responses.
+        ready()
+        self.assertEqual(synth('測試'),b'\x01\x00')
+        self.assertIsNone(synth.process)
+        self.assertEqual(synth.metadata()['fallback_count'],1)
+        for value in ({'error':'private internal text'},{'pcm':'bad base64'},{'pcm':'AQ=='},{'pcm':''}):
+            process=ready(value)
+            self.assertEqual(synth('測試'),b'\x01\x00')
+            process.kill.assert_called_once()
+        calls=fallback.call_count
+        with self.assertRaises(ValueError):synth('x'*201)
+        self.assertEqual(fallback.call_count,calls)
+        self.assertEqual(synth.metadata()['last_engine'],'windows-local')
+
+    def test_character_health_and_audio_lock(self):
+        entered=threading.Event();release=threading.Event()
+        class Synth:
+            def metadata(self):return {'engine':'qwen3-local','device':'cuda','voice':'R2'}
+            def __call__(self,text):
+                entered.set();release.wait(5);return b'\x01\x00'
+        token='t'*64
+        server=module.create_server(Model(),token,port=0,synthesizer=Synth())
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        base='http://127.0.0.1:'+str(server.server_port)
+        headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'}
+        results=[]
+        def synthesize():
+            with urllib.request.urlopen(urllib.request.Request(base+'/synthesize',data=b'{"text":"test"}',headers=headers)) as response:results.append(response.read())
+        caller=threading.Thread(target=synthesize)
+        try:
+            caller.start();self.assertTrue(entered.wait(3))
+            with urllib.request.urlopen(urllib.request.Request(base+'/health',headers=headers)) as response:
+                self.assertEqual(json.load(response)['tts']['voice'],'R2')
+            for path,content in (('/synthesize','application/json'),('/transcribe','audio/wav')):
+                req=urllib.request.Request(base+path,data=b'{}',headers={**headers,'Content-Type':content})
+                with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(req)
+                self.assertEqual(err.exception.code,429)
+        finally:
+            release.set();caller.join();server.shutdown();server.server_close();thread.join()
+        self.assertEqual(results,[b'\x01\x00'])
+
     def test_synthesis(self):
         calls=[]
         def synthesize(text):

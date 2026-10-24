@@ -1,5 +1,29 @@
 # 本機語音合成與裝置播放
 
+## .100 角色 TTS（2026-10-24 最新）
+
+使用者初步接受 R2 角色聲線，現已在 .100 接入相同 `/synthesize`；.199 程式及韌體不需變更。現有 speech venv 不安裝 Qwen 套件，獨立常駐 worker 使用 `.tools/voice-design/.venv`，啟動時載入固定 Base 權重與合成 R2 參考特徵。推論與動態 PCM 僅留記憶體，不保存或記錄輸入文字。只有先前固定合成試聽素材存在 `.tools/`。
+
+啟動角色模式（repo 根目錄）：
+
+```powershell
+.\services\speech\start.ps1 -TtsEngine character
+```
+
+原本 Windows 模式仍是腳本預設；回復時先停止目前這個語音服務，再以 `.\services\speech\start.ps1 -TtsEngine windows` 啟動，保留既有設定與金鑰。不要在同一埠並行啟動兩份。`character` 啟動會先等待 worker 就緒（最多 180 秒），失敗則以 Hanhan 提供服務；不是等待 HTTP 請求時才冷載入。
+
+角色請求共用原本 STT 忙碌鎖，36 秒內未取得有效 PCM 便終止 worker 並嘗試 Hanhan（8 秒期限）。角色程序失敗後保持 Windows 回退，避免每句重新載入造成持續逾時；恢復角色模式需在無進行中請求時重啟服務。回退也失敗時，回通用 HTTP 錯誤，不暴露文字／內部例外。未新增 .199 的控制接口，未自動播放。
+
+`/health` 的 `tts.engine`／`tts.device` 表示目前可用引擎；`configured_engine` 為 qwen3-local，`voice` 為 R2，`ready` 是角色 worker 是否存活。`last_engine` 表示上一筆實際完成所用引擎，`fallback_count` 記錄本次服務程序的回退次數。不以 ready 單獨宣稱 GPU 推論或聽感通過。
+
+本輪實測：真實 API 完整句 13.68 秒音訊／29.50 秒合成，短句 7.68 秒／15.81 秒；headers、17000 Hz／mono／16-bit little-endian 原始 PCM、非靜音及長度通過，未啟用回退。以其中五秒合成語音測 CUDA/small STT，HTTP 成功並返回非空辨識，約 13.60 秒；這不是裝置或真人收音驗收。另以獨立未啟動角色 worker 的 adapter 驗證真實 Hanhan 回退，3.29 秒音訊／0.45 秒合成，不影響執行中的角色服務。
+
+加速效果：常駐模型／參考特徵避免每句冷啟動；設為四個 CPU 執行緒後，完整句與原試聽 29.48 秒相比沒有明顯推論加速，不宣稱達到即時。未使用改變已接受聲線的解碼設定或擅自縮短輸出；.199 現有 50 秒合成逾時維持，長句仍可能回退／失敗。角色與 STT 模型共存及順序推論已測；Ollama 模型同時 GPU 推論、長句、長時間負載與新聲線裝置播放仍待測。
+
+依賴版本、模型 revision／參考 SHA256 與素材位置見 `VOICE_REFERENCE_SPEC.md`、worker 原始碼及 `.tools/voice-design/requirements-resolved.txt`。這些模型、venv 與合成參考不隨 Git，下一台不能只拉原始碼便假定可用。固定合成 API 檢查：`services/speech/.venv/Scripts/python.exe tools/check-character-api.py`（不播放、不錄音、不存音訊，輸出 metadata 至 `.tools/voice-design/api-validation.json`）。
+
+本次程式測試：Node 14 項、Python 5 項通過；Python 新增 worker 啟動／私有 token 隔離、錯誤與逾時回退、health metadata 及 STT／TTS 忙碌互斥測試。這些 mock 測試與上方真實模型測試分開記錄。
+
 更新：2026-10-24。**.199 已編譯並刷入，使用者確認裝置中文清楚、音量可接受，基本播放驗收通過。** 接手先讀 `AGENTS.md`、`HANDOFF_5070.md`、本文件；刷寫前讀 `HARDWARE_STATUS.md`。
 
 最新實測：應用 1,346,144 bytes，僅寫入 0x20000、hash 校驗通過；兩次固定短句播放皆完成，約 2.55 秒收到播放回報、6.12 秒流程完成，Wi-Fi ACK 持續。再次播放使用新 ID，舊 ID 下載 HTTP 409；播放後相機可恢復，檢查後停止。14 項 Node、2 項 Python 測試通過。新韌體播放後的真人 STT 回歸、長句、弱網路及實際失聯仍待驗證。下方「尚未編譯」等描述保留為原始交接時狀態，最新驗收以本段及 HANDOFF_5070.md 為準。
