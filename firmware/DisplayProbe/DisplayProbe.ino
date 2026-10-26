@@ -1,4 +1,5 @@
 #include <M5Unified.h>
+#include "FaceAnimation.h"
 #include "NetworkTransport.h"
 #include "CameraTransport.h"
 #include "AudioProbe.h"
@@ -24,16 +25,6 @@ const char* expressionName() {
 const char* statusName() {
   switch (status) { case 'r': return "running"; case 'p': return "paused"; case 'c': return "completed"; default: return "idle"; }
 }
-uint8_t entryAnimationFrame(uint32_t cycleMs, uint32_t frameMs) {
-  uint32_t position = millis() % cycleMs;
-  return position < frameMs * 4 ? position / frameMs : 0;
-}
-uint8_t neutralIdleFrame() {
-  uint32_t position = millis() % 9000;
-  if (position < 480) return position / 120;
-  if (position >= 5200 && position < 6400) return 32 + (position-5200)/300;
-  return 0;
-}
 uint8_t speakingMouthFrame() {
   if (audioStage != 3 || audioSamples == nullptr || audioLength == 0) return 0;
   size_t position = min(audioLength - 1, (size_t)((millis() - audioAt) * audioRate / 1000));
@@ -45,89 +36,60 @@ uint8_t speakingMouthFrame() {
   if (peak < 5500) return 2;
   return 3;
 }
-void drawExpressionFace(uint8_t animation, bool speaking, bool listening, bool cue) {
-  constexpr uint16_t backgroundColor = 0x1947;
-  constexpr uint16_t outlineColor = 0x7CE7;
-  constexpr uint16_t faceColor = 0x2A49;
-  constexpr uint16_t featureColor = 0xEFB5;
-  constexpr uint16_t accentColor = 0xAEB8;
-  uint8_t spriteFrame = animation & 3;
-  bool lookingAround = animation >= 32 && animation <= 35;
-  int bob = 0, squash = 0;
-  if (expression == 'h' && !speaking && !listening && !cue) {
-    const int8_t happyBob[4] = {0,-4,-8,2};
-    bob = happyBob[spriteFrame];
-    squash = spriteFrame == 3 ? 6 : 0;
+void drawExpressionFace(const face_animation::Pose& pose,bool speaking,bool listening,bool cue) {
+  constexpr uint16_t outline=0x7CE7,face=0x2A49,ink=0xEFB5,accent=0xAEB8;
+  const int y=32+pose.bob,eyeY=y+49;
+  if(listening){
+    int radius=12+pose.pulse*3;
+    frame.drawCircle(30,y+56,radius,accent);frame.drawCircle(290,y+56,radius,accent);
+    if(radius>22){frame.drawCircle(30,y+56,radius-9,accent);frame.drawCircle(290,y+56,radius-9,accent);}
   }
-  int faceX = 30, faceY = 32 + bob + squash/2, faceW = 260, faceH = 112 - squash;
-  int centerY = faceY + faceH/2;
-
-  // Draw expanding listening rings first, then cover their inner halves with the face.
-  if (listening) {
-    for (uint8_t ring=0; ring<spriteFrame; ++ring) {
-      int radius = 12 + ring*9;
-      frame.drawCircle(faceX,centerY,radius,accentColor);
-      frame.drawCircle(faceX+faceW,centerY,radius,accentColor);
+  frame.fillRoundRect(30,y,260,112,22,outline);
+  frame.fillRoundRect(35,y+5,250,102,18,face);
+  for(int center : {100,220}){
+    center+=pose.gaze;
+    if(pose.happyEyes&&pose.eyes>12){
+      for(int offset=-1;offset<=1;++offset){
+        frame.drawLine(center-13,eyeY+2+offset,center,eyeY-7+offset,ink);
+        frame.drawLine(center,eyeY-7+offset,center+13,eyeY+2+offset,ink);
+      }
+    }else{
+      frame.fillRoundRect(center-11,eyeY-pose.eyes/2,22,pose.eyes,min(8,pose.eyes/2),ink);
     }
   }
-  frame.fillRoundRect(faceX,faceY,faceW,faceH,22,outlineColor);
-  frame.fillRoundRect(faceX+6,faceY+6,faceW-12,faceH-12,17,faceColor);
-
-  int eyeTop = faceY + 34;
-  int leftX = 91, rightX = 212;
-  if (lookingAround && spriteFrame == 1) { leftX -= 9; rightX -= 9; }
-  else if (lookingAround && spriteFrame == 3) { leftX += 9; rightX += 9; }
-  int eyeHeight = expression == 'h' ? 18 : 26;
-  bool neutralBlink = expression == 'n' && !speaking && !listening && !cue && !lookingAround && (spriteFrame == 1 || spriteFrame == 2);
-  bool teasingBlink = expression == 't' && !speaking && !listening && !cue && (spriteFrame == 1 || spriteFrame == 2);
-
-  if (expression == 'h' && !speaking && !listening && !cue && spriteFrame == 2) {
-    frame.drawLine(leftX-2,eyeTop+10,leftX+7,eyeTop+15,featureColor);
-    frame.drawLine(leftX+7,eyeTop+15,leftX+16,eyeTop+10,featureColor);
-    frame.drawLine(rightX-2,eyeTop+10,rightX+7,eyeTop+15,featureColor);
-    frame.drawLine(rightX+7,eyeTop+15,rightX+16,eyeTop+10,featureColor);
-  } else {
-    int leftHeight = eyeHeight, rightHeight = eyeHeight;
-    int leftTop = eyeTop, rightTop = eyeTop;
-    if (neutralBlink) {
-      leftHeight = rightHeight = spriteFrame == 2 ? 4 : 10;
-      leftTop += (eyeHeight-leftHeight)/2; rightTop += (eyeHeight-rightHeight)/2;
-    } else if (expression == 't') {
-      // Keep both eyes geometrically identical. The playful character comes from
-      // the smirk below instead of an asymmetric wink that reads as "uneven eyes".
-      leftHeight = rightHeight = teasingBlink ? (spriteFrame == 2 ? 4 : 10) : eyeHeight;
-      leftTop += (eyeHeight-leftHeight)/2; rightTop += (eyeHeight-rightHeight)/2;
+  if(expression=='h'||expression=='t'){
+    frame.fillRoundRect(66+pose.gaze,y+70,24,5,2,accent);
+    frame.fillRoundRect(230+pose.gaze,y+70,24,5,2,accent);
+  }
+  if(expression=='c'){
+    for(int offset=0;offset<2;++offset){
+      frame.drawLine(83,y+26+offset,112,y+18+offset,ink);
+      frame.drawLine(208,y+18+offset,237,y+26+offset,ink);
     }
-    frame.fillRoundRect(leftX,leftTop,17,leftHeight,min(6,leftHeight/2),featureColor);
-    frame.fillRoundRect(rightX,rightTop,17,rightHeight,min(6,rightHeight/2),featureColor);
   }
-
-  if (expression == 'c') {
-    int browLift = spriteFrame == 2 ? 4 : 0;
-    frame.drawLine(87,faceY+27-browLift,108,faceY+21-browLift,featureColor);
-    frame.drawLine(212,faceY+21-browLift,233,faceY+27-browLift,featureColor);
+  int mx=160+pose.gaze/3,my=y+82;
+  if(speaking){
+    const int widths[]={24,14,23,32},heights[]={4,10,18,25};
+    int w=widths[pose.mouth],h=heights[pose.mouth];
+    frame.fillRoundRect(mx-w/2,my-h/2,w,h,min(8,h/2),ink);
+    if(pose.mouth>=2)frame.fillRoundRect(mx-w/2+4,my-h/2+4,w-8,h-8,3,face);
+  }else if(expression=='h'){
+    frame.fillRoundRect(mx-17,my-6,34,23,10,ink);
+    frame.fillRect(mx-19,my-8,38,10,face);
+  }else if(expression=='t'){
+    for(int offset=0;offset<3;++offset){
+      frame.drawLine(mx-17,my+5+offset,mx+2,my+5+offset,ink);
+      frame.drawLine(mx+2,my+5+offset,mx+19,my-3+offset,ink);
+    }
+  }else if(expression=='c'){
+    for(int offset=0;offset<3;++offset){
+      frame.drawLine(mx-13,my+5+offset,mx,my+offset,ink);
+      frame.drawLine(mx,my+offset,mx+13,my+5+offset,ink);
+    }
+  }else{
+    frame.fillRoundRect(mx-12,my+2,24,4,2,ink);
   }
-
-  int mouthY = faceY + 78;
-  if (speaking) {
-    if (spriteFrame == 0) frame.fillRect(148,mouthY+7,24,4,featureColor);
-    else if (spriteFrame == 1) frame.fillRoundRect(153,mouthY+3,14,10,4,featureColor);
-    else if (spriteFrame == 2) frame.fillRoundRect(149,mouthY,22,16,6,featureColor);
-    else frame.fillRoundRect(145,mouthY-4,30,24,9,featureColor);
-  } else if (expression == 'h') {
-    frame.fillRoundRect(147,mouthY-2,26,20,8,featureColor);
-  } else if (expression == 't') {
-    frame.drawLine(144,mouthY+8,159,mouthY+8,featureColor);
-    frame.drawLine(159,mouthY+8,176,mouthY,featureColor);
-  } else if (expression == 'c') {
-    int depth = spriteFrame == 2 ? 9 : 6;
-    frame.drawLine(145,mouthY+depth,160,mouthY,featureColor);
-    frame.drawLine(160,mouthY,175,mouthY+depth,featureColor);
-  } else {
-    frame.fillRect(148,mouthY+7,24,4,featureColor);
-  }
-
-  if (cue) frame.fillCircle(160,faceY+faceH-9,3+spriteFrame*3,accentColor);
+  if(cue)frame.fillCircle(160,y+101,2+pose.pulse/2,accent);
 }
 bool applyFrame() {
   char session[9], nextPhase, nextStatus, nextExpression, nextPresence, cueId[9], cueCode, extra;
@@ -154,23 +116,17 @@ void drawScreen() {
   static bool drawn = false, previousLive = false;
   static uint32_t previousSeconds = 0;
   static char previousPhase = 0, previousStatus = 0, previousExpression = 0, previousPresence = 0;
-  static uint8_t previousAnimation = 255;
+  static uint32_t previousAnimation = 0xffffffff;
   bool speaking = audioStage == 3, listening = audioStage == 2, cue = audioStage == 1;
-  uint8_t animation = 0;
-  if (speaking) animation = 20 + speakingMouthFrame();
-  else if (listening) animation = 24 + (millis()/220)%4;
-  else if (cue) animation = 28 + (millis()/220)%2;
-  else if (expression == 'h') animation = 4 + entryAnimationFrame(2400,180);
-  else if (expression == 't') animation = 8 + entryAnimationFrame(3200,150);
-  else if (expression == 'c') animation = 12 + entryAnimationFrame(2800,180);
-  else animation = neutralIdleFrame();
+  auto pose=face_animation::pose(expression,millis(),speaking,listening,cue,speaking?speakingMouthFrame():0);
+  uint32_t animation=pose.key()|(uint32_t(speaking?1:listening?2:cue?3:0)<<22);
   bool semanticChanged = touch_controls::changed || screen_idle::redrawOnWake || !drawn || previousLive != live || previousSeconds != seconds || previousPhase != phase || previousStatus != status || previousExpression != expression || previousPresence != presence;
   if (frame.width() == 0 || (!semanticChanged && previousAnimation == animation)) return;
   frame.fillScreen(0x1947);
   frame.setTextColor(0xEFB5,0x1947); frame.setTextSize(1);
   frame.setCursor(12,10); frame.print(networkEnabled ? (live ? "WIFI LIVE" : "WIFI DISCONNECTED") : (live ? "USB LIVE" : "USB DISCONNECTED"));
   frame.setCursor(204,10); frame.print(presence == 'p' ? "PRESENT" : presence == 'a' ? "ABSENT" : "UNKNOWN");
-  drawExpressionFace(animation,speaking,listening,cue);
+  drawExpressionFace(pose,speaking,listening,cue);
   frame.setTextSize(1); frame.setCursor(36,155);
   if (listening) frame.print("LISTENING / speak now");
   else if (speaking) frame.print("SPEAKING / character voice");
@@ -179,7 +135,7 @@ void drawScreen() {
   frame.setTextSize(4); frame.setCursor(98,176);
   if (live) frame.printf("%02lu:%02lu",(unsigned long)(seconds/60),(unsigned long)(seconds%60));
   else frame.print("--:--");
-  frame.setTextSize(1); frame.setCursor(100,224); frame.print("ATK STACKCHAN");
+  frame.setTextSize(1);
   touch_controls::draw();
   frame.pushSprite(0, 0);
   if(screen_idle::redrawOnWake)Serial.printf("{\"type\":\"display_redrawn\",\"wake_to_draw_ms\":%lu}\n",(unsigned long)(millis()-screen_idle::wakeAt));
@@ -246,7 +202,7 @@ void loop() {
   bool wasSleeping=screen_idle::sleeping;
   screen_idle::service(status);
   touch_controls::service(wasSleeping);
-  if (!screen_idle::sleeping&&(screen_idle::redrawOnWake||millis() - lastDraw >= 100)) { lastDraw = millis(); drawScreen(); }
+  if (!screen_idle::sleeping&&(screen_idle::redrawOnWake||millis() - lastDraw >= 50)) { lastDraw = millis(); drawScreen(); }
   if(!body_motion::busy){serviceAudio();if(!audioStage&&!screen_idle::sleeping)serviceCamera();motor_safety::service();}
   bool live=hasState && millis()-receivedAt < (networkEnabled?15000:5000);
   uint32_t elapsed=(millis()-receivedAt)/1000;

@@ -2,6 +2,16 @@
 
 日期：2026-10-26。
 
+## 移除底部品牌文字
+
+依使用者要求移除裝置畫面 ATK STACKCHAN 字樣；app `.tools/build/display-no-footer/DisplayProbe.ino.bin`，2,069,120 bytes，SHA256 `28470eebc807202336ff1752b85d03a5299ffcf3ad7d1d8f7b34b83587a0ce1c`，只寫 0x20000，刷前舊版／刷後新 app verify matched。編譯通過，其他表情／觸控／計時／馬達邏輯不變。
+
+## 2026-10-26 表情動畫第二版
+
+新 app `.tools/build/display-expression-v2/DisplayProbe.ino.bin`，2,069,168 bytes，SHA256 `ca61ebe8f07879921c3ff8d8a9359cd1b3a56194fb1764a94fc17860de2333df`；刷前 next-start 舊版／刷後新 app verify matched，只寫 0x20000，編譯及姿態端點 constexpr 通過。程序式 smoothstep 左右看、快閉慢開對稱眨眼、呼吸與開心輕跳、情緒眉嘴差異、PCM 四級嘴型、八階收音提示。繪圖排程上限20fps，並非實測FPS。
+
+馬達／計時／觸控／休眠流程保留，未變更服務或觸發實機計時動作。表情自然度、雙眼觀感與說話／收音時的穩定性待使用者確認；舊 Sprite Sheet 為歷史參考，不是目前新姿態圖集。
+
 ## 2026-10-26 觸控完成後直接開始下一段
 
 使用者回報加快馬達「沒問題」。觸控完成主按鈕現為「開始休息／開始專注」，單次 nextStart 完成切階段＋開始，成功回表情；Node 共用開始語音／燈效／馬達流程，網頁 next 不變。app 2,068,720 bytes，SHA256 `df28c6e96509a33871b0bab94a9251c1809f56a54bdc370d54eab14a682153f8`，只寫 0x20000，刷前舊／刷後新版 verify matched，編譯通過。Node 36/36 通過，服務已重啟；未替使用者觸發下一段，現場單擊操作與語音待確認。
