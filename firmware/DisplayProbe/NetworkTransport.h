@@ -7,7 +7,9 @@
 #include <freertos/queue.h>
 #include <atomic>
 #include <WebSocketsClient.h>
-#if __has_include("network.dev.h")
+#if __has_include("network.prd.h")
+#include "network.prd.h"
+#elif __has_include("network.dev.h")
 #include "network.dev.h"
 #define STACKCHAN_HTTP_DEV 1
 #elif __has_include("network.local.h")

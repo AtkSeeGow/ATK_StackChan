@@ -4,6 +4,12 @@
 
 更新：2026-10-26。接手時先核對此文件，再讀 `SPEECH_SETUP.md`／`TTS_SETUP.md`。GPU STT 與裝置五秒中文基本端到端驗收已通過；.199 已編譯刷入 TTS 韌體，使用者確認裝置中文清楚、音量可接受。下方較早的「未部署」描述為歷史紀錄，以最新實測節為準。
 
+## 辦公室正式網路候選（2026-10-27，未刷入）
+
+- 使用者新增私有 `firmware/DisplayProbe/network.prd.h` 並要求寫入。已讓韌體以 `network.prd.h` 優先於 `network.dev.h`／`network.local.h`，並將其加入 `.gitignore`；未輸出或提交 Wi-Fi 密碼與裝置金鑰。
+- 不洩密欄位檢查確認 SSID、密碼、NTP 與 64 字元裝置金鑰存在，但候選使用公開主機名稱的 HTTP 且根 CA 留白。依既有 `startNetwork()` 安全檢查，此設定會被視為不完整並保留 USB 模式。從目前環境對該主機 TCP 80／443 的連線亦未成功，不能宣稱控制站已可由辦公室連入。
+- 因此本輪沒有刷機、沒有動任何分割區、沒有啟動馬達。Windows 原生建置仍在既知 `Illegal System DLL Relocation` 失敗，尚未為這份無效候選改用 WSL 建置。下一步先讓控制站 HTTPS 端點可達，將候選改為 `https://` 並填入實際憑證鏈根 CA；之後以 WSL 編譯，只寫 `0x20000`，再做辦公室 Wi-Fi／WebSocket／相機／語音及斷線恢復實測。
+
 ## 移除裝置底部品牌文字（已部署）
 
 - 依使用者要求移除 DisplayProbe.ino 底部 ATK STACKCHAN 印字，保留文字大小重設；表情第二版、計時、觸控與馬達未改。app `.tools/build/display-no-footer/DisplayProbe.ino.bin`，2,069,120 bytes，SHA256 `28470eebc807202336ff1752b85d03a5299ffcf3ad7d1d8f7b34b83587a0ce1c`；編譯／constexpr 通過，刷前表情第二版與刷後新 app verify matched，只寫 0x20000。未重啟主機服務，畫面實際觀感仍待使用者確認。

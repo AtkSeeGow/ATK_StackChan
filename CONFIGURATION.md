@@ -2,6 +2,12 @@
 
 站台名稱以 [SERVICE_MAP.md](SERVICE_MAP.md) 為準：**控制站**負責本文件的 Node `.env` 與裝置連線；**AI 語音站**負責 Ollama、STT／TTS。下方歷史 `.199` 指控制站、`.100` 指 AI 語音站，實際 IP／網址只作連線設定。識別名稱尚未建立 DNS，本輪正名沒有變更網路或部署。
 
+## 辦公室正式網路候選（2026-10-27，尚未刷入）
+
+`firmware/DisplayProbe/network.prd.h` 現在為最高優先設定檔，其次才是 `network.dev.h`、`network.local.h`；三者都排除版本控制，不得輸出其中的密碼或金鑰。正式設定仍須使用可從裝置所在網路連線的 HTTPS 網址及對應根 CA，否則韌體會保留 USB 模式。
+
+目前新增的 `network.prd.h` 已通過 SSID、密碼及 64 字元裝置金鑰存在性檢查，但網址仍是公開主機名稱的 HTTP，根 CA 留白；2026-10-27 從目前環境連線該主機的 TCP 80／443 也未成功。因此未將此候選刷入裝置。待控制站 HTTPS 反向代理與外部連線成立、設定改為 HTTPS 並填入實際憑證鏈根 CA 後，才重新編譯，只寫應用槽 `0x20000`，再從辦公室網路驗證 WebSocket、狀態、相機、語音及斷線恢復。
+
 ## 目前區網 HTTP 開發模式（2026-10-23）
 
 已讀取 `firmware/DisplayProbe/network.dev.h`，優先於 `network.local.h`；目前使用 `http://192.168.0.199:3000`，兩端金鑰已補齊。韌體只允許私人 IPv4 的 HTTP 開發網址，HTTPS 仍驗證根憑證。

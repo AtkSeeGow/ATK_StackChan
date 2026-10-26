@@ -4,7 +4,7 @@
 
 目前版本已加入 WebSocket 即時事件與獨立 FreeRTOS 馬達任務；HTTP 保留音訊／相機傳輸及斷線備援。建置需 Arduino `WebSockets@2.7.2`，.199 的 WSL ext4 user libraries 已安裝。主機先執行 `npm ci`。計時動作預設 ±15°，可在網頁往返測試區選擇 5～30°後「套用至番茄鐘」；動作圍繞已保存的中心。實機驗證範圍以 `HARDWARE_STATUS.md` 最新節為準。
 
-已加入可設定的 Wi-Fi／HTTPS 背景傳輸，設定檔為本資料夾 `DisplayProbe/network.local.h`（範本 `network.example.h`）。實機使用不納入 Git 的 `network.dev.h` 連到 .199；完整設定說明見根目錄 `CONFIGURATION.md`。
+已加入可設定的 Wi-Fi／HTTPS 背景傳輸。設定載入優先序為不納入 Git 的 `network.prd.h`、`network.dev.h`、`network.local.h`，範本為 `network.example.h`。正式設定必須是可達的 HTTPS 網址並提供對應根 CA；完整設定與目前候選狀態見根目錄 `CONFIGURATION.md`。
 
 `DisplayProbe` 接收主機的番茄鐘、在席、表情與一次性 body cue，並回覆套用確認；同時支援 Wi-Fi 相機、收音與 TTS。開機不初始化馬達，只有具唯一 ID、未過期且未被語音／相機阻擋的計時事件可呼叫已驗證的約 +3.1° yaw 往返。pitch 與 yaw 負方向仍停用。
 

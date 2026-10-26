@@ -8,6 +8,7 @@ backups/
 network.local.h
 network.dev.h
 network.dev.h.*
+network.prd.h
 settings.local.json
 services/speech/.venv/
 __pycache__/
