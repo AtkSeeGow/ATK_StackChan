@@ -8,13 +8,24 @@ export class SynthesisPlayback {
   }
   get busy(){return ['synthesizing','queued','downloading','playback'].includes(this.job.status);}
   finish(status,error=''){this.job.status=status;this.job.error=error;this.pcm=null;}
-  async start(id,text,volume,outputGain){
+  async prepare(text,outputGain=8){
+    const isolated=new SynthesisPlayback(this.url,this.token,this.now);
+    await isolated.start('preparing',text,208,outputGain,'timer-preparation');
+    if(isolated.job.status!=='queued'||!isolated.pcm)throw new Error('預備語音合成失敗。');
+    const pcm=isolated.pcm;isolated.pcm=null;return pcm;
+  }
+  enqueuePrepared(id,pcm,volume=208,outputGain=8,source='timer-prepared'){
+    this.snapshot();if(this.busy)throw new Error('上一段語音仍在播放。');
+    if(!Buffer.isBuffer(pcm)||!pcm.length||pcm.length%2||pcm.length>1020000)throw new Error('預備音訊無效。');
+    this.pcm=pcm;this.job={id,status:'queued',error:'',requestedAt:this.now(),volume,outputGain,source,seconds:pcm.length/34000};
+  }
+  async start(id,text,volume,outputGain,source='manual'){
     this.snapshot();
     if(this.busy)throw new Error('上一段語音仍在播放或合成。');
     if(!this.configured)throw new Error('尚未設定語音服務。');
     if(typeof text!=='string' || !text.trim() || text.length>200)throw new Error('朗讀文字需介於 1～200 字。');
     if(!Number.isInteger(volume)||volume<32||volume>255||![4,8].includes(outputGain))throw new Error('播放音量設定不正確。');
-    this.job={id,status:'synthesizing',error:'',requestedAt:this.now(),volume,outputGain};
+    this.job={id,status:'synthesizing',error:'',requestedAt:this.now(),volume,outputGain,source};
     try{
       const response=await fetch(this.url+'/synthesize',{method:'POST',redirect:'error',signal:AbortSignal.timeout(50000),headers:{Authorization:`Bearer ${this.token}`,'Content-Type':'application/json'},body:JSON.stringify({text:text.trim()})});
       if(!response.ok)throw new Error('合成服務失敗。');

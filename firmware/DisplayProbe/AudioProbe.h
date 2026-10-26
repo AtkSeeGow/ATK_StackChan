@@ -30,8 +30,13 @@ void audioReport(const char* status) {
 }
 void finishAudio(const char* result) {
   M5.Mic.end(); M5.Speaker.end(); free(audioSamples); audioSamples=nullptr;
-  audioStage=0; audioReport(result);
+  // Return shared audio resources to a known idle state before another TTS or
+  // STT session. Long downloaded speech must not leave the next capture stuck.
+  if(cameraBusReleased) { M5.In_I2C.begin(); cameraBusReleased=false; }
+  audioStage=0; speechCapture=false; audioLength=audioCount; audioTimeoutMs=7000;
+  delay(20); audioReport(result);
 }
+bool audioSubsystemReady() { return audioStage==0 && audioSamples==nullptr && !M5.Speaker.isPlaying() && !M5.Mic.isRecording(); }
 void startAudio(const char* id, int volume, bool speakerOnly, int outputGain, bool speech) {
   if(strlen(id)!=8 || strspn(id,"0123456789abcdef")!=8 || !strcmp(lastAudioId,id) || audioStage) return;
   strcpy(lastAudioId,id); audioPeak=0; audioRms=0;

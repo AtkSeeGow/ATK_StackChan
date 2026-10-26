@@ -5,6 +5,8 @@
 #include <time.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <atomic>
+#include <WebSocketsClient.h>
 #if __has_include("network.dev.h")
 #include "network.dev.h"
 #define STACKCHAN_HTTP_DEV 1
@@ -14,10 +16,14 @@
 #include "network.example.h"
 #endif
 
-struct NetworkFrame { char text[120]; bool camera; char audio[9]; int volume; bool speakerOnly; int outputGain; bool speech; };
-struct NetworkAck { char text[300]; };
+struct NetworkFrame { char text[160]; bool camera; char audio[9]; int volume; bool speakerOnly; int outputGain; bool speech; char motorId[9]; int motorDegrees; bool motorCenterMode; int motorCenterOffset; bool realtimeOnly; int timerDegrees; char activityId[9]; };
+struct NetworkAck { char text[384]; };
 struct NetworkImage { uint8_t* data; size_t length; uint32_t captured; };
 QueueHandle_t networkFrames = nullptr, networkAcks = nullptr;
+QueueHandle_t realtimeAcks = nullptr;
+QueueHandle_t touchCommands=nullptr,touchReplies=nullptr;
+std::atomic<bool> realtimeConnected{false};
+std::atomic<bool> realtimePollNow{false};
 QueueHandle_t networkImages = nullptr;
 QueueHandle_t networkAudio = nullptr;
 struct NetworkSpeech { uint8_t* data; size_t length; char id[9]; uint32_t captured; };
@@ -30,6 +36,51 @@ bool beginDeviceRequest(HTTPClient& request, NetworkClient& plain, NetworkClient
   if (networkHttpDev) return request.begin(plain,url);
   secure.setCACert(STACKCHAN_ROOT_CA); secure.setHandshakeTimeout(5);
   return request.begin(secure,url);
+}
+
+void realtimeTask(void*) {
+  WebSocketsClient socket;
+  String address(STACKCHAN_SERVER_URL);
+  bool secure=address.startsWith("https://");
+  address.remove(0,secure?8:7);
+  int slash=address.indexOf('/');if(slash>=0)address=address.substring(0,slash);
+  int colon=address.indexOf(':');
+  uint16_t port=colon>=0?address.substring(colon+1).toInt():(secure?443:80);
+  String host=colon>=0?address.substring(0,colon):address;
+  // The library appends CRLF itself; a trailing blank line ends the HTTP
+  // handshake early and the remaining headers become invalid WS frames.
+  String authorization=String("Authorization: Bearer ")+STACKCHAN_DEVICE_TOKEN;
+  socket.setExtraHeaders(authorization.c_str());
+  socket.setReconnectInterval(2000);
+  socket.enableHeartbeat(10000,3000,2);
+  char lastPlaybackNotice[9]="";
+  socket.onEvent([&](WStype_t type,uint8_t* payload,size_t length){
+    if(type==WStype_CONNECTED){realtimeConnected=true;return;}
+    if(type==WStype_DISCONNECTED){realtimeConnected=false;return;}
+    if(type!=WStype_TEXT||length>300)return;
+    String packet;packet.concat(reinterpret_cast<const char*>(payload),length);
+    if(packet.startsWith("C|")){NetworkAck reply{};packet.toCharArray(reply.text,sizeof(reply.text));if(touchReplies)xQueueOverwrite(touchReplies,&reply);return;}
+    int newline=packet.indexOf('\n');if(newline<0||newline>=159)return;
+    NetworkFrame frame{};char mode,extra;
+    char id[9]="",playbackId[9]="";
+    int count=sscanf(packet.c_str()+newline+1,"B|%d|%d|%8[0-9a-f]|%c|%d|%8[0-9a-f]|%8[0-9a-f]%c",&frame.motorCenterOffset,&frame.timerDegrees,id,&mode,&frame.motorDegrees,playbackId,frame.activityId,&extra);
+    if(count!=7||strlen(id)!=8||strlen(playbackId)!=8||strlen(frame.activityId)!=8||abs(frame.motorCenterOffset)>15||frame.timerDegrees<5||frame.timerDegrees>30||!strchr("cs",mode))return;
+    if(strcmp(playbackId,"00000000")&&strcmp(playbackId,lastPlaybackNotice)){strcpy(lastPlaybackNotice,playbackId);realtimePollNow=true;}
+    packet.substring(0,newline).toCharArray(frame.text,sizeof(frame.text));
+    if(strcmp(id,"00000000"))strcpy(frame.motorId,id);
+    frame.motorCenterMode=mode=='c';frame.realtimeOnly=true;
+    xQueueOverwrite(networkFrames,&frame);
+  });
+  if(secure)socket.beginSslWithCA(host.c_str(),port,"/api/device/live",STACKCHAN_ROOT_CA);
+  else socket.begin(host.c_str(),port,"/api/device/live");
+  for(;;){
+    if(WiFi.status()==WL_CONNECTED&&(networkHttpDev||time(nullptr)>1700000000))socket.loop();
+    else realtimeConnected=false;
+    NetworkAck ack{};
+    if(realtimeConnected&&xQueueReceive(realtimeAcks,&ack,0)==pdTRUE)socket.sendTXT(ack.text);
+    if(realtimeConnected&&touchCommands&&xQueueReceive(touchCommands,&ack,0)==pdTRUE)socket.sendTXT(ack.text);
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 }
 
 void networkTask(void*) {
@@ -48,19 +99,25 @@ void networkTask(void*) {
     }
     // A trustworthy clock is needed for X.509 certificate validity checks.
     if (!networkHttpDev && time(nullptr) < 1700000000) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-    if (millis()-lastPoll >= 2000) {
+    if (millis()-lastPoll >= 2000 || realtimePollNow.exchange(false)) {
       lastPoll = millis();
       NetworkClient plain; NetworkClientSecure client;
       HTTPClient request; request.setConnectTimeout(3000); request.setTimeout(3000);
       request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
       if (beginDeviceRequest(request,plain,client,base+"/api/device/frame")) {
-        const char* headers[] = {"X-StackChan-Camera","X-StackChan-Audio","X-StackChan-Volume","X-StackChan-Audio-Mode","X-StackChan-Output-Gain","X-StackChan-Playback","X-StackChan-Playback-Volume","X-StackChan-Playback-Gain"}; request.collectHeaders(headers,8);
+        const char* headers[] = {"X-StackChan-Camera","X-StackChan-Audio","X-StackChan-Volume","X-StackChan-Audio-Mode","X-StackChan-Output-Gain","X-StackChan-Playback","X-StackChan-Playback-Volume","X-StackChan-Playback-Gain","X-StackChan-Motor","X-StackChan-Motor-Degrees","X-StackChan-Motor-Mode","X-StackChan-Motor-Center","X-StackChan-Timer-Degrees","X-StackChan-Activity"}; request.collectHeaders(headers,14);
         request.addHeader("Authorization",String("Bearer ")+STACKCHAN_DEVICE_TOKEN);
         if (request.GET() == 200) {
           String text = request.getString(); text.trim();
           if (text.startsWith("S|") && text.length() < sizeof(NetworkFrame::text)) {
             NetworkFrame incoming{}; text.toCharArray(incoming.text,sizeof(incoming.text));
             incoming.camera = request.header("X-StackChan-Camera") == "1";
+            request.header("X-StackChan-Motor").toCharArray(incoming.motorId,sizeof(incoming.motorId));
+            incoming.motorDegrees=request.header("X-StackChan-Motor-Degrees").toInt();
+            incoming.motorCenterMode=request.header("X-StackChan-Motor-Mode")=="center";
+            incoming.motorCenterOffset=request.header("X-StackChan-Motor-Center").toInt();
+            incoming.timerDegrees=constrain(request.header("X-StackChan-Timer-Degrees").toInt(),5,30);
+            request.header("X-StackChan-Activity").toCharArray(incoming.activityId,sizeof(incoming.activityId));
             request.header("X-StackChan-Audio").toCharArray(incoming.audio,sizeof(incoming.audio));
             incoming.volume=request.header("X-StackChan-Volume").toInt();
             incoming.speakerOnly=request.header("X-StackChan-Audio-Mode")=="speaker";
@@ -170,6 +227,8 @@ void startNetwork() {
   }
   networkFrames = xQueueCreate(1,sizeof(NetworkFrame));
   networkAcks = xQueueCreate(1,sizeof(NetworkAck));
+  realtimeAcks = xQueueCreate(1,sizeof(NetworkAck));
+  touchCommands=xQueueCreate(1,sizeof(NetworkAck));touchReplies=xQueueCreate(1,sizeof(NetworkAck));
   networkImages = xQueueCreate(1,sizeof(NetworkImage));
   networkAudio = xQueueCreate(1,sizeof(NetworkAck));
   networkSpeech = xQueueCreate(1,sizeof(NetworkSpeech));
@@ -193,4 +252,5 @@ void startNetwork() {
     vQueueDelete(networkPlayback);
     networkFrames = nullptr; networkAcks = nullptr;
   }
+  if(networkEnabled&&realtimeAcks)xTaskCreate(realtimeTask,"stackchan-websocket",8192,nullptr,1,nullptr);
 }

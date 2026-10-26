@@ -19,6 +19,11 @@ test('synthesis bounds PCM, prevents replay and releases expired/private audio',
   try{
     const s=new SynthesisPlayback(`http://127.0.0.1:${server.address().port}`,token,()=>now);
     await assert.rejects(s.start('12345678','',208,8));assert.equal(calls,0);
+    const prepared=await s.prepare('測試',8);
+    assert.equal(s.job.status,'idle');assert.equal(s.pcm,null);assert.ok(prepared.length>0);
+    s.enqueuePrepared('prepared1',prepared);
+    assert.equal(s.snapshot().status,'queued');assert.equal(s.take('prepared1'),prepared);
+    s.report({id:'prepared1',status:'completed'});
     await s.start('12345678','測試',208,8);
     assert.equal(s.snapshot().status,'queued');assert.equal(s.snapshot().text,undefined);
     await assert.rejects(s.start('87654321','測試',208,8));

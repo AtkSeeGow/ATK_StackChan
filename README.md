@@ -1,16 +1,16 @@
 # ATK StackChan：本機互動原型
 
-跨主機接手先讀 [HANDOFF_5070.md](HANDOFF_5070.md)；下一階段在 192.168.0.100 部署 STT，192.168.0.199 繼續執行主服務。`AGENTS.md` 提供接手入口；私有金鑰、工具、資料與原廠備份不會隨 Git 同步。
+本專案分為 **StackChan 控制站**（網頁、計時、裝置管理）、**StackChan AI 語音站**（對話、辨識、角色語音）與 **StackChan 裝置**。名稱與目前部署位置見 [SERVICE_MAP.md](SERVICE_MAP.md)。跨主機接手先讀 [HANDOFF_5070.md](HANDOFF_5070.md)；`AGENTS.md` 提供接手入口。私有金鑰、工具、資料與原廠備份不隨 Git 同步。
 
 主機設定在根目錄 `.env`。目前實測區網 HTTP Wi-Fi（裝置設定 `firmware/DisplayProbe/network.dev.h`），管理網頁維持 localhost；USB 模式仍保留。正式 HTTPS 設定使用 `network.local.h`，遠端部署尚未驗證。完整欄位與搬移方式見 [CONFIGURATION.md](CONFIGURATION.md)。
 
-第一階段已完成網頁角色對話、番茄鐘、手動在席與離席策略、StackChan 的 USB 表情／計時同步，以及 USB 相機預覽與初步在席判斷。語音與主動自言自語尚未接入。
+目前已接入網頁角色對話、番茄鐘、觸控操作、在席判斷、Wi-Fi／WebSocket 同步、R2 語音播放與提前準備、燈效及受限馬達提示。完整已驗證與待驗收範圍以交接文件最新清單為準。
 
 ## 開啟
 
-語音硬體回放已可用；下一階段五秒按鈕收音與 Server 轉文字程式已加入，Server 尚待啟動，見 [SPEECH_SETUP.md](SPEECH_SETUP.md)。
+AI 語音站的 STT 與 R2 TTS 已部署；啟動角色模式與驗收限制見 [SPEECH_SETUP.md](SPEECH_SETUP.md)。
 
-需要 Node.js 24 以上，不需安裝 npm 套件。USB 同步另使用 Python 與 pyserial（此電腦已備妥）。在此資料夾執行：
+控制站需要 Node.js 24 以上，先執行 `npm ci` 安裝鎖定依賴。USB 同步另使用 Python 與 pyserial。在此資料夾執行：
 
 ```powershell
 node server.mjs

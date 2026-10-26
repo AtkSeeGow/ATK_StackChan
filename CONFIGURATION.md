@@ -1,5 +1,7 @@
 # 設定位置與部署路徑
 
+站台名稱以 [SERVICE_MAP.md](SERVICE_MAP.md) 為準：**控制站**負責本文件的 Node `.env` 與裝置連線；**AI 語音站**負責 Ollama、STT／TTS。下方歷史 `.199` 指控制站、`.100` 指 AI 語音站，實際 IP／網址只作連線設定。識別名稱尚未建立 DNS，本輪正名沒有變更網路或部署。
+
 ## 目前區網 HTTP 開發模式（2026-10-23）
 
 已讀取 `firmware/DisplayProbe/network.dev.h`，優先於 `network.local.h`；目前使用 `http://192.168.0.199:3000`，兩端金鑰已補齊。韌體只允許私人 IPv4 的 HTTP 開發網址，HTTPS 仍驗證根憑證。

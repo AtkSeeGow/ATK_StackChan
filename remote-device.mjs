@@ -14,20 +14,21 @@ export class RemoteDevice {
     this.lastAck = 0; this.pending = new Map(); this.applied = null;
   }
   authorized(header) { return !!this.token && sameSecret(header, `Bearer ${this.token}`); }
-  issue(state, expression, now = Date.now()) {
+  issue(state, expression, effects = {flags:0,id:'00000000',code:'n'}, now = Date.now()) {
     if (this.seq >= 0xfffffffe) { this.session = randomBytes(4).toString('hex'); this.seq = 0; this.lastAckSeq = 0; this.lastAck = 0; this.pending.clear(); }
     const seq = ++this.seq;
-    const frame = encodeDisplay(this.session, seq, state, expression);
-    this.pending.set(seq, {time:now,expression,status:state.timer.status,remaining:Math.ceil(state.timer.remainingMs / 1000)});
+    const frame = encodeDisplay(this.session, seq, state, expression, effects);
+    this.pending.set(seq, {time:now,expression,status:state.timer.status,remaining:Math.ceil(state.timer.remainingMs / 1000),effectId:effects.id});
     for (const [key,value] of this.pending) if (now-value.time > 10000 || this.pending.size > 8) this.pending.delete(key);
     return frame;
   }
   acknowledge(message, now = Date.now()) {
     const issued = this.pending.get(message.seq);
-    if (!issued || now-issued.time > 10000 || message.type !== 'sync_ack' || message.protocol !== 1 || message.session !== this.session || !expressions.includes(message.expression) || message.expression !== issued.expression || message.status !== issued.status || message.remaining_seconds !== issued.remaining) return false;
+    if (!issued || now-issued.time > 10000 || message.type !== 'sync_ack' || message.protocol !== 2 || message.session !== this.session || !expressions.includes(message.expression) || message.expression !== issued.expression || message.status !== issued.status || message.remaining_seconds !== issued.remaining || message.effect_id !== issued.effectId) return false;
     if (message.seq <= (this.lastAckSeq || 0)) return false;
     this.pending.delete(message.seq); this.lastAckSeq = message.seq; this.lastAck = now;
-    this.applied = { expression:message.expression,status:message.status,remainingSeconds:message.remaining_seconds,renderCount:message.render_count };
+    this.applied = { expression:message.expression,status:message.status,remainingSeconds:message.remaining_seconds,renderCount:message.render_count,
+      audioReady:typeof message.audio_ready==='boolean' ? message.audio_ready : null,effectId:message.effect_id,motionBusy:message.motion_busy===true,screenSleeping:message.screen_sleeping===true };
     return true;
   }
   snapshot() {

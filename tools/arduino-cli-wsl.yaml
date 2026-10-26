@@ -1,0 +1,11 @@
+board_manager:
+  additional_urls:
+    - https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
+directories:
+  data: /mnt/c/Projects/ATK_StackChan/.tools/wsl-arduino/data
+  downloads: /mnt/c/Projects/ATK_StackChan/.tools/wsl-arduino/downloads
+  user: /mnt/c/Projects/ATK_StackChan/.tools/wsl-arduino/user
+build_cache:
+  path: /mnt/c/Projects/ATK_StackChan/.tools/wsl-arduino/cache
+updater:
+  enable_notification: false

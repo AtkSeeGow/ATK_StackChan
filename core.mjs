@@ -1,6 +1,7 @@
 export const defaults = {
   focusMinutes: 25, breakMinutes: 5, absencePolicy: 'continue', absenceGraceSeconds: 60,
-  ollamaUrl: 'http://192.168.0.100:11434', model: 'qwen3.5:4b', presenceSource: 'manual'
+  ollamaUrl: 'http://192.168.0.100:11434', model: 'qwen3.5:4b', presenceSource: 'manual',
+  timerVoice: false, autoSpeakReplies: false, timerLights: true, timerMotion: true, motorCenterOffset:0, timerMotionDegrees:15
 };
 
 export function newState() {
@@ -58,6 +59,16 @@ export function timerAction(state, settings, action, now = Date.now()) {
   } else if (action === 'reset') {
     t.status = 'idle'; t.deadline = null; t.pauseReason = null;
     t.remainingMs = settings[t.phase === 'focus' ? 'focusMinutes' : 'breakMinutes'] * 60000;
+  } else if (action === 'switch') {
+    if (t.status !== 'idle') throw new Error('只能在尚未開始計時時切換專注或休息。');
+    t.phase = t.phase === 'focus' ? 'break' : 'focus';
+    t.remainingMs = settings[t.phase === 'focus' ? 'focusMinutes' : 'breakMinutes'] * 60000;
+    t.deadline = null; t.pauseReason = null;
+  } else if (action === 'nextStart') {
+    if(t.status!=='completed')throw new Error('請先完成目前這一段計時。');
+    timerAction(state,settings,'next',now);
+    timerAction(state,settings,'start',now);
+    return;
   } else if (action === 'next') {
     if (t.status !== 'completed') throw new Error('請先完成目前這一段計時。');
     t.phase = t.phase === 'focus' ? 'break' : 'focus'; t.status = 'idle';
@@ -86,6 +97,10 @@ export function validateSettings(input) {
   result.absencePolicy = input.absencePolicy;
   result.presenceSource = input.presenceSource || 'manual';
   if (!['manual','camera'].includes(result.presenceSource)) throw new Error('在席來源不正確。');
+  for (const key of ['timerVoice','autoSpeakReplies','timerLights','timerMotion']) {
+    if (typeof input[key] !== 'boolean') throw new Error(`${key} 必須是布林值。`);
+    result[key] = input[key];
+  }
   const url = new URL(input.ollamaUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('請填寫 Ollama 主機網址，不包含路徑或帳密。');
   result.ollamaUrl = url.origin;

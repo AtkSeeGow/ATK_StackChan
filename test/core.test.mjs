@@ -2,6 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { newState, defaults, timerAction, setPresence, reconcile, validateSettings, dayKey } from '../core.mjs';
 
+test('nextStart switches a completed phase and starts it in one action, without recounting completion',()=>{
+  const s=newState();timerAction(s,defaults,'start',0);reconcile(s,defaults,1500000);
+  const count={...s.completed};
+  timerAction(s,defaults,'nextStart',1501000);
+  assert.equal(s.timer.phase,'break');assert.equal(s.timer.status,'running');
+  assert.equal(s.timer.deadline,1801000);assert.deepEqual(s.completed,count);
+  const deadline=s.timer.deadline;
+  assert.throws(()=>timerAction(s,defaults,'nextStart',1502000));assert.equal(s.timer.deadline,deadline);
+  reconcile(s,defaults,1801000);timerAction(s,defaults,'nextStart',1802000);
+  assert.equal(s.timer.phase,'focus');assert.equal(s.timer.status,'running');assert.equal(s.timer.deadline,3302000);
+});
+
 test('pause and resume preserve remaining time; unknown does not pause', () => {
   const s = newState(), config = { ...defaults, absencePolicy: 'pause' };
   timerAction(s, config, 'start', 1000);
@@ -50,6 +62,16 @@ test('completion is counted once on completion date; break requires manual start
   timerAction(s, config, 'start', start + 200001);
   reconcile(s, config, start + 1000000);
   assert.equal(Object.values(s.completed).reduce((a,b) => a+b, 0), 1);
+});
+
+test('idle timer can switch phase without starting or changing completion count',()=>{
+  const s=newState(),config={...defaults,focusMinutes:30,breakMinutes:7};
+  timerAction(s,config,'switch',1000);
+  assert.deepEqual(s.timer,{phase:'break',status:'idle',remainingMs:420000,deadline:null,pauseReason:null});
+  timerAction(s,config,'switch',2000);
+  assert.equal(s.timer.phase,'focus');assert.equal(s.timer.remainingMs,1800000);
+  timerAction(s,config,'start',3000);
+  assert.throws(()=>timerAction(s,config,'switch',4000));
 });
 
 test('starting while already absent never increases duration', () => {

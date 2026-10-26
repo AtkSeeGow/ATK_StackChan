@@ -4,17 +4,20 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 export const expressions = ['neutral', 'happy', 'teasing', 'concerned'];
-export function encodeDisplay(session, seq, state, expression) {
+export function encodeDisplay(session, seq, state, expression, effects = {flags:0,id:'00000000',code:'n'}) {
   const t = state.timer;
   const seconds = Math.max(0, Math.min(10800, Math.ceil(t.remainingMs / 1000)));
-  return `S|${session}|${seq}|${seconds}|${t.phase === 'focus' ? 'f' : 'b'}|${({idle:'i',running:'r',paused:'p',completed:'c'})[t.status]}|${({neutral:'n',happy:'h',teasing:'t',concerned:'c'})[expression] || 'n'}|${({present:'p',absent:'a',unknown:'u'})[state.presence]}\n`;
+  const flags=Number.isInteger(effects.flags)&&effects.flags>=0&&effects.flags<=3?effects.flags:0;
+  const id=/^[0-9a-f]{8}$/.test(effects.id||'')?effects.id:'00000000';
+  const code=['n','g','w','d'].includes(effects.code)?effects.code:'n';
+  return `S|${session}|${seq}|${seconds}|${t.phase === 'focus' ? 'f' : 'b'}|${({idle:'i',running:'r',paused:'p',completed:'c'})[t.status]}|${({neutral:'n',happy:'h',teasing:'t',concerned:'c'})[expression] || 'n'}|${({present:'p',absent:'a',unknown:'u'})[state.presence]}|${flags}|${id}|${code}\n`;
 }
 
 export class DeviceLink {
-  constructor(root, getState, getExpression, { port = process.env.STACKCHAN_SERIAL_PORT || 'COM4', python = process.env.STACKCHAN_PYTHON || path.join(process.env.USERPROFILE || '', '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'), onCamera = () => {}, cameraControl = () => [] } = {}) {
+  constructor(root, getState, getExpression, { port = process.env.STACKCHAN_SERIAL_PORT || 'COM4', python = process.env.STACKCHAN_PYTHON || path.join(process.env.USERPROFILE || '', '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'), onCamera = () => {}, cameraControl = () => [], getEffects = () => ({flags:0,id:'00000000',code:'n'}) } = {}) {
     this.port = port; this.getState = getState; this.getExpression = getExpression;
     this.session = randomBytes(4).toString('hex'); this.seq = 0; this.lastAck = 0; this.lastAckSeq = 0;
-    this.onCamera = onCamera; this.cameraControl = cameraControl;
+    this.onCamera = onCamera; this.cameraControl = cameraControl; this.getEffects = getEffects;
     this.detail = '尚未收到裝置確認'; this.closed = false;
     if (port === 'off') { this.detail = 'USB 同步已停用'; return; }
     if (!existsSync(python) || !existsSync(path.join(root, '.tools/python/serial'))) { this.detail = 'USB 工具未安裝，請參閱操作說明'; return; }
@@ -44,7 +47,7 @@ export class DeviceLink {
     this.tick = setInterval(() => {
       if (!this.child?.stdin.writable || this.child.stdin.writableLength > 1024) return;
       if (this.seq >= 0xfffffffe) { this.session = randomBytes(4).toString('hex'); this.seq = 0; this.lastAckSeq = 0; this.lastAck = 0; }
-      this.child.stdin.write(encodeDisplay(this.session, ++this.seq, this.getState(), this.getExpression()));
+      this.child.stdin.write(encodeDisplay(this.session, ++this.seq, this.getState(), this.getExpression(), this.getEffects()));
       for (const command of this.cameraControl()) this.child.stdin.write(command);
     }, 1000);
     this.tick.unref();
@@ -55,7 +58,7 @@ export class DeviceLink {
       this.detail = message.status === 'open' ? '等待裝置確認' : 'USB 未連線，正在重連';
       if (message.status !== 'open') this.lastAck = 0;
     }
-    if (message.type !== 'sync_ack' || message.protocol !== 1 || message.session !== this.session || !Number.isInteger(message.seq) || message.seq <= this.lastAckSeq || message.seq > this.seq || message.seq < this.seq - 3 || !expressions.includes(message.expression) || !['idle','running','paused','completed'].includes(message.status) || !Number.isInteger(message.remaining_seconds) || message.remaining_seconds < 0 || message.remaining_seconds > 10800) return;
+    if (message.type !== 'sync_ack' || message.protocol !== 2 || message.session !== this.session || !Number.isInteger(message.seq) || message.seq <= this.lastAckSeq || message.seq > this.seq || message.seq < this.seq - 3 || !expressions.includes(message.expression) || !['idle','running','paused','completed'].includes(message.status) || !Number.isInteger(message.remaining_seconds) || message.remaining_seconds < 0 || message.remaining_seconds > 10800 || !/^[0-9a-f]{8}$/.test(message.effect_id || '')) return;
     this.lastAck = now; this.lastAckSeq = message.seq; this.detail = '番茄鐘與表情同步中';
     this.applied = { expression: message.expression, status: message.status, remainingSeconds: message.remaining_seconds, renderCount: message.render_count };
   }

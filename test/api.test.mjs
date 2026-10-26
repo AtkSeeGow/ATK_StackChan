@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
+import WebSocket from 'ws';
 
 test('HTTP integration: persistence, timer, origin protection, Ollama success/failure', async () => {
   const folder = mkdtempSync(path.join(tmpdir(), 'stackchan-test-'));
@@ -83,12 +84,37 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
     const frameResponse = await fetch(base+'/api/device/frame',{headers:bearer});
     assert.equal(frameResponse.status,200);
     const parts = (await frameResponse.text()).trim().split('|');
-    const ack = {type:'sync_ack',protocol:1,session:parts[1],seq:Number(parts[2]),remaining_seconds:Number(parts[3]),expression:'teasing',status:'paused'};
+    const ack = {type:'sync_ack',protocol:2,session:parts[1],seq:Number(parts[2]),remaining_seconds:Number(parts[3]),expression:'teasing',status:'paused',effect_id:parts[9]};
     const postAck = () => fetch(base+'/api/device/ack',{method:'POST',headers:{...bearer,'Content-Type':'application/json'},body:JSON.stringify(ack)});
     assert.equal((await postAck()).status,200);
     assert.equal((await postAck()).status,409);
     const remoteState = await (await fetch(base+'/api/state',{headers:owner})).json();
     assert.equal(remoteState.device.transport,'wifi'); assert.equal(remoteState.device.connected,true);
+    const motorRequest=data=>fetch(base+'/api/motor',{method:'POST',headers:{...owner,'Content-Type':'application/json'},body:JSON.stringify(data)});
+    assert.equal((await motorRequest({action:'test',degrees:50})).status,400);
+    const center=await(await motorRequest({action:'center',delta:-1})).json();
+    assert.equal(center.motor.status,'queued');
+    const centerFrame=await fetch(base+'/api/device/frame',{headers:bearer});
+    assert.equal(centerFrame.headers.get('x-stackchan-motor-center'),'-1');
+    assert.equal(centerFrame.headers.get('x-stackchan-motor-mode'),'center');
+    assert.equal((await motorRequest({action:'center',delta:1})).status,400);
+    const result=await fetch(base+'/api/device/audio',{method:'POST',headers:{...bearer,'Content-Type':'application/json'},body:JSON.stringify({type:'motor_result',id:center.motor.id,status:'completed',power:'off',pitch_torque:'off',motion_verified:false,center_offset:-1})});
+    assert.equal(result.status,200);
+    const centered=await(await motorRequest({action:'saveCenter'})).json();
+    assert.equal(centered.settings.motorCenterOffset,-1);
+    const savedAgain=await(await motorRequest({action:'saveCenter'})).json();
+    assert.equal(savedAgain.motor.id,center.motor.id);
+    assert.equal(savedAgain.motor.status,'completed');
+    const afterSave=await fetch(base+'/api/device/frame',{headers:bearer});
+    assert.equal(afterSave.headers.get('x-stackchan-motor'),'');
+    assert.equal(afterSave.headers.get('x-stackchan-motor-center'),'-1');
+    const idleActivity=afterSave.headers.get('x-stackchan-activity');
+    await fetch(base+'/api/state',{headers:owner});
+    const passive=await fetch(base+'/api/device/frame',{headers:bearer});
+    assert.equal(passive.headers.get('x-stackchan-activity'),idleActivity);
+    await fetch(base+'/api/activity',{method:'POST',headers:{...owner,'Content-Type':'application/json'},body:'{}'});
+    const active=await fetch(base+'/api/device/frame',{headers:bearer});
+    assert.notEqual(active.headers.get('x-stackchan-activity'),idleActivity);
     const proxyStatus = headers => new Promise((resolve,reject) => {
       http.get(base+'/api/state',{headers},res => {res.resume();resolve(res.statusCode);}).on('error',reject);
     });
@@ -177,5 +203,23 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
     assert.equal((await request('/api/state')).body.synthesis.status,'completed');
     assert.equal((await reportAudio({id:ttsId,status:'completed'})).status,409);
     assert.equal((await request('/api/messages')).body.length,2); // Manual playback does not add chat history.
+    await request('/api/timer',{action:'reset'});
+    const touchSocket=new WebSocket(base.replace('http:','ws:')+'/api/device/live',{headers:bearer});
+    try{
+      const [wire]=await once(touchSocket,'message');const session=wire.toString().split('|')[1];
+      const timer=(await request('/api/state')).body.timer;
+      const command={type:'timer_control',id:'1234abcd',session,phase:timer.phase,status:'idle',action:'start'};
+      async function sendTouch(value){
+        const result=new Promise((resolve,reject)=>{const timeout=setTimeout(()=>{touchSocket.off('message',listener);reject(Error('touch reply timeout'));},2000);function listener(data){if(data.toString().startsWith('C|')){clearTimeout(timeout);touchSocket.off('message',listener);resolve(data.toString());}}touchSocket.on('message',listener);});
+        touchSocket.send(JSON.stringify(value));return result;
+      }
+      assert.equal(await sendTouch(command),'C|1234abcd|ok');
+      const running=(await request('/api/state')).body.timer;assert.equal(running.status,'running');
+      assert.equal(await sendTouch(command),'C|1234abcd|ok');
+      assert.equal((await request('/api/state')).body.timer.deadline,running.deadline);
+      assert.equal(await sendTouch({...command,id:'1234abce'}),'C|1234abce|stale');
+      assert.equal(await sendTouch({...command,id:'1234abcf',status:'running',action:'pause'}),'C|1234abcf|ok');
+      assert.equal((await request('/api/state')).body.timer.status,'paused');
+    }finally{touchSocket.terminate();}
   } finally { await stop(); await new Promise(resolve => mock.close(resolve)); rmSync(folder, { recursive:true,force:true }); }
 });
