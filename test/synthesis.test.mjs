@@ -12,7 +12,7 @@ test('synthesis bounds PCM, prevents replay and releases expired/private audio',
     let raw='';for await(const chunk of req)raw+=chunk;
     assert.equal(JSON.parse(raw).text,'測試');calls++;
     res.setHeader('X-Audio-Sample-Rate',mode==='format'?'44100':'17000');res.setHeader('X-Audio-Channels','1');res.setHeader('X-Audio-Bits','16');
-    const pcm=Buffer.alloc(mode==='oversize'?1020002:34000);
+    const pcm=Buffer.alloc(mode==='oversize'?4194306:mode==='long'?1360000:34000);
     for(let i=0;i<pcm.length;i+=2)pcm.writeInt16LE(30000,i);
     res.end(pcm);
   });server.listen(0,'127.0.0.1');await once(server,'listening');
@@ -37,7 +37,32 @@ test('synthesis bounds PCM, prevents replay and releases expired/private audio',
     assert.equal(s.snapshot().status,'completed');
     await s.start('00000002','測試',208,8);now+=15001;
     assert.equal(s.snapshot().status,'timeout');assert.equal(s.pcm,null);assert.throws(()=>s.take('00000002'));
+    mode='long';await s.start('long-audio','測試',208,8);
+    assert.equal(s.job.seconds,40);s.take('long-audio');
+    now+=65000;assert.equal(s.snapshot().status,'downloading');
+    s.report({id:'long-audio',status:'completed'});
     mode='format';await s.start('00000003','測試',208,8);assert.equal(s.snapshot().status,'failed');assert.equal(s.pcm,null);
     mode='oversize';await s.start('00000004','測試',208,8);assert.equal(s.snapshot().status,'failed');assert.equal(s.pcm,null);
   }finally{await new Promise(r=>server.close(r));}
+});
+
+test('long synthesis remains active after a minute and expires at 180 seconds',async()=>{
+  let now=1000,release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const server=http.createServer(async(req,res)=>{
+    for await(const chunk of req){};
+    await gate;
+    res.writeHead(422);res.end();
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  try{
+    const s=new SynthesisPlayback(`http://127.0.0.1:${server.address().port}`,'t'.repeat(64),()=>now);
+    const pending=s.start('long','測試',208,8);
+    now+=60001;assert.equal(s.snapshot().status,'synthesizing');
+    now+=120000;assert.equal(s.snapshot().status,'timeout');
+    release();await pending;
+    assert.equal(s.pcm,null);
+    await s.start('oversize','測試',208,8);
+    assert.equal(s.snapshot().error,'音訊超過裝置記憶體容量，請縮短文字。');
+  }finally{release();await new Promise(resolve=>server.close(resolve));}
 });

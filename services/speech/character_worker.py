@@ -54,7 +54,7 @@ def main():
                 with torch.inference_mode():
                     wavs, sr = model.generate_voice_clone(text=text, language='Chinese', voice_clone_prompt=prompt, max_new_tokens=450)
                 audio = np.asarray(wavs[0], dtype=np.float64).reshape(-1)
-                if not len(audio) or not np.isfinite(audio).all() or len(audio) / sr > 30:
+                if not len(audio) or not np.isfinite(audio).all() or len(audio) * 17000 / sr * 2 > 4194304:
                     raise ValueError('Invalid duration')
                 rms = float(np.sqrt(np.mean(audio ** 2)))
                 if rms < 1e-6:
@@ -66,7 +66,7 @@ def main():
                 if peak > 0.85:
                     audio *= 0.85 / peak
                 pcm = np.rint(np.clip(audio, -1, 1) * 32767).astype('<i2').tobytes()
-                if not pcm or len(pcm) > 1020000:
+                if not pcm or len(pcm) > 4194304:
                     raise ValueError('Invalid PCM')
                 result = {'pcm': base64.b64encode(pcm).decode('ascii')}
             except Exception:

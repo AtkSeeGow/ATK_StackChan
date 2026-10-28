@@ -3,7 +3,7 @@ export class SynthesisPlayback {
   constructor(url,token,now=Date.now){this.url=url?.replace(/\/$/,'') || '';this.token=token || '';this.now=now;this.job={id:'',status:'idle',error:'',requestedAt:0};this.pcm=null;}
   get configured(){return !!this.url && this.token.length>=32;}
   snapshot(){
-    if(this.busy && this.now()-this.job.requestedAt>(this.job.status==='queued'?15000:60000)) this.finish('timeout');
+    if(this.busy && this.now()-this.job.requestedAt>(this.job.status==='queued'?15000:this.job.status==='synthesizing'?180000:Math.max(60000,(this.job.seconds||0)*1000+30000))) this.finish('timeout');
     return {...this.job,configured:this.configured};
   }
   get busy(){return ['synthesizing','queued','downloading','playback'].includes(this.job.status);}
@@ -16,7 +16,7 @@ export class SynthesisPlayback {
   }
   enqueuePrepared(id,pcm,volume=208,outputGain=8,source='timer-prepared'){
     this.snapshot();if(this.busy)throw new Error('上一段語音仍在播放。');
-    if(!Buffer.isBuffer(pcm)||!pcm.length||pcm.length%2||pcm.length>1020000)throw new Error('預備音訊無效。');
+    if(!Buffer.isBuffer(pcm)||!pcm.length||pcm.length%2||pcm.length>4194304)throw new Error('預備音訊無效。');
     this.pcm=pcm;this.job={id,status:'queued',error:'',requestedAt:this.now(),volume,outputGain,source,seconds:pcm.length/34000};
   }
   async start(id,text,volume,outputGain,source='manual'){
@@ -27,11 +27,12 @@ export class SynthesisPlayback {
     if(!Number.isInteger(volume)||volume<32||volume>255||![4,8].includes(outputGain))throw new Error('播放音量設定不正確。');
     this.job={id,status:'synthesizing',error:'',requestedAt:this.now(),volume,outputGain,source};
     try{
-      const response=await fetch(this.url+'/synthesize',{method:'POST',redirect:'error',signal:AbortSignal.timeout(50000),headers:{Authorization:`Bearer ${this.token}`,'Content-Type':'application/json'},body:JSON.stringify({text:text.trim()})});
+      const response=await fetch(this.url+'/synthesize',{method:'POST',redirect:'error',signal:AbortSignal.timeout(180000),headers:{Authorization:`Bearer ${this.token}`,'Content-Type':'application/json'},body:JSON.stringify({text:text.trim()})});
+      if(response.status===422){this.finish('failed','音訊超過裝置記憶體容量，請縮短文字。');return;}
       if(!response.ok)throw new Error('合成服務失敗。');
       if(response.headers.get('x-audio-sample-rate')!=='17000'||response.headers.get('x-audio-channels')!=='1'||response.headers.get('x-audio-bits')!=='16')throw new Error('合成音訊格式不正確。');
       const chunks=[];let size=0;
-      for await(const chunk of response.body){size+=chunk.length;if(size>1020000)throw new Error('語音超過三十秒，請縮短文字。');chunks.push(chunk);}
+      for await(const chunk of response.body){size+=chunk.length;if(size>4194304)throw new Error('音訊超過裝置記憶體容量，請縮短文字。');chunks.push(chunk);}
       const pcm=Buffer.concat(chunks);
       if(!pcm.length||pcm.length%2)throw new Error('合成音訊不完整。');
       let peak=0;for(let i=0;i<pcm.length;i+=2)peak=Math.max(peak,Math.abs(pcm.readInt16LE(i)));

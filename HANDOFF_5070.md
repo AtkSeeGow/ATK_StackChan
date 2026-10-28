@@ -1,5 +1,38 @@
 # StackChan 控制站與 AI 語音站交接紀錄
 
+## 2026-10-28 取消30秒音訊限制（原始碼完成、韌體未部署）
+
+依使用者要求取消固定30秒音訊上限，保留合成等待180秒（R2推論總期限165秒）與200字輸入。語音adapter／worker／API／Windows合成／控制站／韌體的PCM檢查統一改為4MiB記憶體預算，這是容量保護，17kHz mono int16約123.36秒；尚非無限長串流。裝置實際可用PSRAM不足仍回allocation_failed，不裁切音訊。控制站播放等待依實際音長加30秒且至少60秒；韌體依音長加5秒，長度乘法改uint64_t避免超過約126秒時32位溢位。韌體下載期限10→30秒，角色stdio行長擴大以容納PCM。超出記憶體預算回422並明確提示容量不足，不停止正常worker或改聲線。
+
+Node37/37與Python7/7通過，包含API與adapter接受40秒合成PCM、長播放狀態與超容量拒絕。真實GPU固定176字合成測試成功：6段、81.30秒完成、音訊37.84秒、last_engine=qwen3-local、fallback_count=0；PCM僅記憶體、未播放或落盤，測試worker已關閉。未驗證裝置長音訊聽感與下載。當前AI語音站checkout沒有.tools/arduino-cli、Arduino核心／函式庫，wsl亦未提供可用Linux建置環境；未編譯或刷寫，不能宣稱裝置已支援長音訊。控制站需依既有工具鏈編譯並只刷應用槽0x20000，保留分割表及備份，再驗收長音訊下載／播放與播放後收音。正式服務未重啟。
+
+
+## 2026-10-28 長句 TTS 修正（已修改、待兩站重啟整合驗收）
+
+使用者已停止服務並授權調整，指定整次合成等待上限180秒。character.py 改為標點優先分段（每段最多32字）後依序合成、記憶體合併；每段60秒、R2總期限165秒，預留關閉失敗worker、Windows備援8秒與回傳時間。控制站 synthesis.mjs HTTP與合成狀態期限180秒；播放／下載原期限保留。輸入200字與單段PCM30秒上限保留，超長回HTTP422及縮短提示，不以Windows掩蓋正常R2音訊超長。推論失敗才關閉worker、整筆回退，隨後背景重載；恢復期間使用Windows，恢復失敗有60秒退避，由後續請求觸發再嘗試。health新增recovering、last_fallback_reason固定原因碼、last_chunks，沒有保存文字或音訊。正常停機會等恢復執行緒結束再釋放worker。
+
+驗證：Node37/37、Python7/7通過，含分段、30秒拒絕不殺worker、失敗後恢復、180秒狀態期限。Python實際以既有speech venv執行（系統python別名不可用）。真實GPU使用固定合成測試長句：2段、耗時25.00秒、PCM11.60秒、last_engine=qwen3-local、fallback_count=0；音訊僅記憶體，未播放／保存，測試結束已關閉worker。此GPU測試在總期限從180收緊165秒前完成，後續只改期限與重跑上述全部測試。未啟動正式服務、未刷機、未收音。兩站需重啟載入新版：AI語音站 start.ps1 -Device cuda -TtsEngine character；控制站重啟既有Node程序。尚未驗收使用者原始長文字、分段接續聽感、裝置端到端、真正GPU故障／逾時後背景恢復與Ollama共存負載，不以mock宣稱完成。
+
+## 2026-10-28 長文字 TTS 回退排查
+
+使用者回報較長文字播放為 Windows 內建語音。以控制站既有私有配對設定讀取 AI 語音站即時 health：configured_engine=qwen3-local、voice=R2，但 engine=windows-local、device=cpu、ready=false、last_engine=windows-local、fallback_count=2；STT 仍為 cuda/small。確認目前角色 worker 已不可用且正在 Windows 備援，並非僅依聽感推測。程式 character.py 對單筆角色合成設36秒期限；逾時、worker 失敗或無效 PCM（含超過30秒音訊）均會關閉 worker 並回退，之後不自動恢復，須重啟角色模式。現有 metadata 未保留回退原因，無法追溯此筆究竟是逾時或其他推論錯誤；長文字逾時是推測，非已證實根因。本輪只讀取狀態與核對程式，未重啟、合成、播放或收音；長句穩定性與故障恢復仍待修正／實測。
+
+## 2026-10-27 全域音量與輸出模式
+
+依使用者要求，控制站新增持久化 audioVolume／audioOutputGain（預設208／8），介面調整後自動保存；手動朗讀、最新回覆、自動 AI 回覆、計時語音、喇叭／錄音回放及 STT 提示共用設定。新增 /api/audio/settings，獨立保存不重設計時；一般陪伴設定保存保留全域音量。預備計時 PCM 使用設定的 gain，gain 變更時清除並重建快取，volume 直接在排入播放時採最新值；已開始的合成／播放維持原設定。Node 36/36及前端語法檢查通過，含範圍驗證、設定保存、重啟還原、一般設定不覆蓋音量及裝置 header 使用全域值。未變更 AI 語音站或韌體，未自動重啟控制站、未播放／錄音，實際各事件聽感待重啟及重新整理後驗收。
+
+## 2026-10-27 控制站語音未設定排查
+
+使用者回報語音一直準備中。即時本機控制站 /api/state 顯示裝置 connected=true、synthesis configured=false、語音預備 waiting／空 entries；語音 health 失敗。私有 .env 有語音網址但 STACKCHAN_STT_TOKEN 空白，直接 health 回401。已用本機既有 services/speech/settings.local.json token 驗證同一端點 HTTP200：STT ready=true cuda/small，TTS qwen3-local cuda/R2 ready=true、fallback_count=0，再私下將此既有 token 補入 .env，未輸出金鑰、未產生新金鑰。控制站需使用者停止並重新 npm start 載入設定；本輪未自動重啟以免干擾計時，未合成／播放／收音，未宣稱 GPU 真實推論或語音預備回歸完成。
+
+## 2026-10-27 恢復控制站 HTTP demo 模式
+
+使用者再次明確要求 demo 先走 HTTP。已在目前含 WebSocket 的版本新增 HTTP public origin 支援與 IPv4 全介面監聽，HTTP／WebSocket 僅在 HTTPS origin 才要求代理標頭；管理帳密、裝置獨立金鑰及 Host／Origin 驗證保留。Node 36/36 通過，整合測試涵蓋 HTTP 登入／拒絕及 WebSocket 正確帳密成功、無帳密拒絕，並隔離本機 public origin 避免 .env 污染。未改私有設定、未啟動正式站台、未改路由器／防火牆或韌體，外網與實機仍未驗證。設定及 HTTP 未加密限制見 CONFIGURATION.md 最新節。本節取代下方「目前只接受 HTTPS」的檢查結果。
+
+## 2026-10-27 控制站本機依賴補齊
+
+使用者啟動遇到 realtime.mjs 找不到 ws；package.json 與 lock 已列依賴，但本機 node_modules/ws 不存在。已執行 npm ci，安裝 1 個套件，ws import 成功。首次 node --test 受本機公開設定影響有 1 項啟動失敗；僅在測試子 shell 清空 STACKCHAN_PUBLIC_ORIGIN／STACKCHAN_DEV_ORIGIN 後 36/36 通過，未更動私有 .env。未啟動正式控制站或驗證外網／裝置。注意目前 checkout 的 server.mjs 再次僅接受 HTTPS public origin，先前聊天中 HTTP 修改未包含在目前版本，不能沿用其已部署的假設。未變更 AI 語音站、韌體或模型。
+
 正式名稱與目前主機位置以 [SERVICE_MAP.md](SERVICE_MAP.md) 為準：控制站負責網頁／計時／裝置；AI 語音站負責對話／STT／TTS。歷史 `.199`／`.100` 僅代表當時部署位置，後續討論使用角色名稱。檔名保留以維持既有接手入口。
 
 更新：2026-10-26。接手時先核對此文件，再讀 `SPEECH_SETUP.md`／`TTS_SETUP.md`。GPU STT 與裝置五秒中文基本端到端驗收已通過；.199 已編譯刷入 TTS 韌體，使用者確認裝置中文清楚、音量可接受。下方較早的「未部署」描述為歷史紀錄，以最新實測節為準。

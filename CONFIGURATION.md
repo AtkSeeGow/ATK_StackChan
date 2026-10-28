@@ -1,5 +1,11 @@
 # 設定位置與部署路徑
 
+## HTTP demo 模式（2026-10-27）
+
+控制站支援不經代理的 HTTP 帳密連線。`.env` 設 `STACKCHAN_PUBLIC_ORIGIN=http://實際對外IP或網域:外部埠`（無結尾斜線），清空 `STACKCHAN_DEV_ORIGIN`，設定非空且不含冒號的 `STACKCHAN_WEB_USER`、至少 16 字元的 `STACKCHAN_WEB_PASSWORD`，保留至少 32 字元的 `STACKCHAN_DEVICE_TOKEN`。`npm start` 後 HTTP 模式監聽所有 IPv4 介面，HTTP 與 WebSocket 都保留管理帳密、Host／Origin 及獨立裝置金鑰檢查。HTTPS 模式仍使用原本代理要求與本機監聽。此節優先於下方舊有 HTTPS 限制說明。
+
+外部存取仍需路由器埠轉送與 Windows 防火牆入站允許；本次未修改或驗證這兩項。HTTP 帳密和內容未加密，demo 使用專用密碼。裝置韌體對公開 HTTP 的限制仍存在，此修改只代表控制站支援 HTTP，不代表裝置跨網路已通過。
+
 站台名稱以 [SERVICE_MAP.md](SERVICE_MAP.md) 為準：**控制站**負責本文件的 Node `.env` 與裝置連線；**AI 語音站**負責 Ollama、STT／TTS。下方歷史 `.199` 指控制站、`.100` 指 AI 語音站，實際 IP／網址只作連線設定。識別名稱尚未建立 DNS，本輪正名沒有變更網路或部署。
 
 ## 辦公室正式網路候選（2026-10-27，尚未刷入）

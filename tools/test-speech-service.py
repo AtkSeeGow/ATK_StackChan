@@ -29,6 +29,7 @@ class SpeechTests(unittest.TestCase):
     def test_character_protocol_and_fallback(self):
         fallback=Mock(return_value=b'\x01\x00')
         synth=character.CharacterSynthesizer(fallback,timeout=0)
+        synth.recover=Mock()
         def ready(value=None):
             process=Mock();process.poll.return_value=None
             synth.process=process;synth.messages=queue.Queue()
@@ -43,6 +44,8 @@ class SpeechTests(unittest.TestCase):
         self.assertEqual(synth('測試'),b'\x01\x00')
         self.assertIsNone(synth.process)
         self.assertEqual(synth.metadata()['fallback_count'],1)
+        self.assertEqual(synth.metadata()['last_fallback_reason'],'timeout')
+        synth.recover.assert_called_once()
         for value in ({'error':'private internal text'},{'pcm':'bad base64'},{'pcm':'AQ=='},{'pcm':''}):
             process=ready(value)
             self.assertEqual(synth('測試'),b'\x01\x00')
@@ -51,6 +54,39 @@ class SpeechTests(unittest.TestCase):
         with self.assertRaises(ValueError):synth('x'*201)
         self.assertEqual(fallback.call_count,calls)
         self.assertEqual(synth.metadata()['last_engine'],'windows-local')
+
+    def test_character_long_text_and_duration(self):
+        text='這是一段合成測試，請依照標點分段。'*7
+        parts=character.CharacterSynthesizer.chunks(text)
+        self.assertEqual(''.join(parts),text)
+        self.assertTrue(all(len(part)<=32 for part in parts))
+        fallback=Mock()
+        synth=character.CharacterSynthesizer(fallback)
+        synth.process=Mock();synth.process.poll.return_value=None
+        synth.messages=queue.Queue()
+        for part in parts:synth.messages.put({'pcm':base64.b64encode(b'\x02\x00').decode()})
+        self.assertEqual(synth(text),b'\x02\x00'*len(parts))
+        fallback.assert_not_called()
+        synth.messages.put({'pcm':base64.b64encode(bytes(1360000)).decode()})
+        self.assertEqual(len(synth('超過三十秒')),1360000)
+        synth.messages.put({'pcm':base64.b64encode(bytes(4194306)).decode()})
+        with self.assertRaises(OverflowError):synth('超長音訊')
+        synth.process.kill.assert_not_called()
+        fallback.assert_not_called()
+
+    def test_character_background_recovery(self):
+        synth=character.CharacterSynthesizer(Mock(return_value=b'\x01\x00'))
+        def start():
+            synth.process=Mock();synth.process.poll.return_value=None
+            synth.messages=queue.Queue()
+            synth.messages.put({'pcm':base64.b64encode(b'\x02\x00').decode()})
+        synth.start=Mock(side_effect=start)
+        self.assertEqual(synth('失敗後恢復'),b'\x01\x00')
+        synth.recovery.join(3)
+        self.assertFalse(synth.recovery.is_alive())
+        self.assertEqual(synth('恢復後'),b'\x02\x00')
+        synth.start.assert_called_once()
+        synth.shutdown()
 
     def test_character_health_and_audio_lock(self):
         entered=threading.Event();release=threading.Event()
@@ -83,7 +119,7 @@ class SpeechTests(unittest.TestCase):
         calls=[]
         def synthesize(text):
             calls.append(text)
-            return bytes(34000)
+            return bytes(1360000)
         token='t'*64
         server=module.create_server(Model(),token,port=0,synthesizer=synthesize)
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -100,7 +136,7 @@ class SpeechTests(unittest.TestCase):
                 self.assertEqual(err.exception.code,400)
             self.assertEqual(calls,[])
             with request({'text':'測試語音'}) as response:
-                self.assertEqual(response.read(),bytes(34000))
+                self.assertEqual(response.read(),bytes(1360000))
                 self.assertEqual(response.headers['X-Audio-Sample-Rate'],'17000')
                 self.assertEqual(response.headers['Cache-Control'],'no-store')
             self.assertEqual(calls,['測試語音'])

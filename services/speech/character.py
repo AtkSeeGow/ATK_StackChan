@@ -6,10 +6,12 @@ from pathlib import Path
 import queue
 import subprocess
 import threading
+import time
+import re
 
 
 class CharacterSynthesizer:
-    def __init__(self, fallback, timeout=36):
+    def __init__(self, fallback, timeout=60):
         self.fallback = fallback
         self.timeout = timeout
         self.process = None
@@ -17,12 +19,19 @@ class CharacterSynthesizer:
         self.last_engine = None
         self.fallback_count = 0
         self.lock = threading.Lock()
+        self.recovery = None
+        self.retry_at = 0
+        self.stopping = False
+        self.last_fallback_reason = None
+        self.last_chunks = 0
 
     def metadata(self):
-        ready=self.process is not None and self.process.poll() is None
+        recovering=self.recovery is not None and self.recovery.is_alive()
+        ready=not recovering and self.process is not None and self.process.poll() is None
         return dict(engine='qwen3-local' if ready else 'windows-local', device='cuda' if ready else 'cpu',
             configured_engine='qwen3-local', voice='R2', sample_rate=17000, ready=ready,
-            fallback_engine='windows-local', last_engine=self.last_engine, fallback_count=self.fallback_count)
+            fallback_engine='windows-local', last_engine=self.last_engine, fallback_count=self.fallback_count,
+            recovering=recovering, last_fallback_reason=self.last_fallback_reason, last_chunks=self.last_chunks)
 
     def close(self):
         process, self.process = self.process, None
@@ -49,7 +58,7 @@ class CharacterSynthesizer:
         def receive():
             try:
                 while True:
-                    line = process.stdout.readline(1400000)
+                    line = process.stdout.readline(5600000)
                     if not line or not line.endswith('\n'):
                         break
                     messages.put(json.loads(line), timeout=1)
@@ -68,24 +77,88 @@ class CharacterSynthesizer:
             self.close()
             raise RuntimeError('Character startup failed') from None
 
+    def recover(self):
+        if self.stopping or time.monotonic() < self.retry_at or (self.recovery and self.recovery.is_alive()):
+            return
+        self.retry_at = time.monotonic() + 60
+        def run():
+            with self.lock:
+                if self.stopping:
+                    return
+                try:
+                    self.start()
+                except Exception:
+                    self.last_fallback_reason = 'recovery_failed'
+                    self.retry_at = time.monotonic() + 60
+        self.recovery = threading.Thread(target=run, daemon=True)
+        self.recovery.start()
+
+    def shutdown(self):
+        self.stopping = True
+        with self.lock:
+            self.close()
+
+    @staticmethod
+    def chunks(text):
+        result, pending = [], ''
+        for part in re.split(r'(?<=[。！？!?；;，,、：:\n])', text):
+            if pending and len(pending) + len(part) > 32:
+                result.append(pending)
+                pending = ''
+            while len(part) > 32:
+                result.append(part[:32])
+                part = part[32:]
+            pending += part
+        if pending:
+            result.append(pending)
+        return [part for part in result if part.strip()]
+
     def __call__(self, text):
         if not isinstance(text, str) or not text.strip() or len(text) > 200:
             raise ValueError('Text must contain 1-200 characters')
+        if self.recovery and self.recovery.is_alive():
+            self.last_engine = 'windows-local'
+            self.last_fallback_reason = 'recovering'
+            self.fallback_count += 1
+            return self.fallback(text)
         with self.lock:
-            # Do not cold-load on an HTTP request: .199 allows 50 seconds total.
+            started = time.monotonic()
+            reason = 'worker_unavailable'
+            self.last_chunks = 0
             try:
                 if self.process is None or self.process.poll() is not None:
                     raise RuntimeError('Character unavailable')
-                self.process.stdin.write(json.dumps({'text': text}) + '\n')
-                self.process.stdin.flush()
-                value = self.messages.get(timeout=self.timeout)
-                pcm = base64.b64decode(value['pcm'], validate=True)
-                if not pcm or len(pcm) % 2 or len(pcm) > 1020000:
-                    raise ValueError('Invalid PCM')
+                pieces, size = [], 0
+                for part in self.chunks(text):
+                    remaining = 165 - (time.monotonic() - started)
+                    if remaining <= 0:
+                        raise queue.Empty()
+                    reason = 'worker_io'
+                    self.process.stdin.write(json.dumps({'text': part}) + '\n')
+                    self.process.stdin.flush()
+                    value = self.messages.get(timeout=min(self.timeout, remaining))
+                    reason = 'worker_error'
+                    if 'error' in value:
+                        raise RuntimeError('Worker failed')
+                    reason = 'invalid_pcm'
+                    pcm = base64.b64decode(value['pcm'], validate=True)
+                    if not pcm or len(pcm) % 2:
+                        raise ValueError('Invalid PCM')
+                    size += len(pcm)
+                    if size > 4194304:
+                        raise OverflowError('Audio exceeds memory budget')
+                    pieces.append(pcm)
+                    self.last_chunks += 1
                 self.last_engine = 'qwen3-local'
-                return pcm
-            except Exception:
+                return b''.join(pieces)
+            except OverflowError:
+                raise
+            except Exception as error:
+                self.last_fallback_reason = 'timeout' if isinstance(error, queue.Empty) else reason
                 self.close()
                 self.fallback_count += 1
                 self.last_engine = 'windows-local'
-                return self.fallback(text)
+        try:
+            return self.fallback(text)
+        finally:
+            self.recover()

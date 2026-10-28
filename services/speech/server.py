@@ -36,7 +36,7 @@ def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model
                     text=value.get('text') if isinstance(value,dict) else None
                     if not isinstance(text,str) or not text.strip() or len(text)>200: return self.reply(400,{'error':'Text must contain 1-200 characters'})
                     pcm=synthesizer(text)
-                    if not isinstance(pcm,bytes) or not pcm or len(pcm)%2 or len(pcm)>1020000: raise RuntimeError('Invalid synthesis output')
+                    if not isinstance(pcm,bytes) or not pcm or len(pcm)%2 or len(pcm)>4194304: raise RuntimeError('Invalid synthesis output')
                     self.send_response(200)
                     self.send_header('Content-Type','application/octet-stream')
                     self.send_header('Cache-Control','no-store')
@@ -45,6 +45,7 @@ def create_server(model, token, host='127.0.0.1', port=8001, device='cpu', model
                     self.send_header('X-Audio-Channels','1')
                     self.send_header('X-Audio-Bits','16')
                     self.end_headers();self.wfile.write(pcm)
+                except OverflowError: self.reply(422,{'error':'Audio exceeds memory budget'})
                 except (ValueError,UnicodeError): self.reply(400,{'error':'Invalid synthesis request'})
                 except Exception: self.reply(500,{'error':'Local synthesis failed'})
                 finally: busy.release()
@@ -86,4 +87,5 @@ if __name__=='__main__':
     try: server.serve_forever()
     finally:
         server.server_close()
-        if hasattr(synthesizer,'close'): synthesizer.close()
+        if hasattr(synthesizer,'shutdown'): synthesizer.shutdown()
+        elif hasattr(synthesizer,'close'): synthesizer.close()

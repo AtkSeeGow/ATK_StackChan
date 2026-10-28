@@ -40,7 +40,7 @@ const transport = process.env.STACKCHAN_TRANSPORT || 'usb';
 if (!['usb','wifi'].includes(transport)) throw new Error('STACKCHAN_TRANSPORT must be usb or wifi');
 if (publicOrigin) {
   const publicUrl = new URL(publicOrigin);
-  if (publicUrl.protocol !== 'https:' || publicUrl.origin !== publicOrigin || publicUrl.username || publicUrl.password || remoteDevice.token.length < 32 || !webUser || webPassword.length < 16) throw new Error('Public mode requires an HTTPS origin, device token (32+ characters), web user and password (16+ characters).');
+  if (!['http:', 'https:'].includes(publicUrl.protocol) || publicUrl.origin !== publicOrigin || publicUrl.username || publicUrl.password || remoteDevice.token.length < 32 || !webUser || webUser.includes(':') || webPassword.length < 16) throw new Error('Public mode requires an HTTP(S) origin, device token (32+ characters), web user without a colon and password (16+ characters).');
 }
 const dataDir = process.env.STACKCHAN_DATA_DIR || path.join(root, 'data');
 mkdirSync(dataDir, { recursive: true });
@@ -76,7 +76,7 @@ function audioOccupied() {
   synthesis.snapshot();speech.snapshot();
   return synthesis.busy || ['queued','recording','transcribing'].includes(speech.job.status) || (audio.requestedAt && Date.now()-audio.requestedAt<20000 && !['completed','timeout'].includes(audio.status) && !audio.status.endsWith('_failed'));
 }
-function startCharacterSpeech(text,expression='neutral',source='manual',volume=208,outputGain=8) {
+function startCharacterSpeech(text,expression='neutral',source='manual',volume=settings.audioVolume,outputGain=settings.audioOutputGain) {
   const remote=remoteDevice.snapshot();
   if(transport!=='wifi'||!remote.connected||remote.applied?.audioReady===false||audioOccupied()||motor.busy)return false;
   cameraEpoch++;camera.enable(false);vision.close();setCharacter(expression,text,source);
@@ -97,7 +97,7 @@ async function buildTimerVoice(action,phase,anticipating=false) {
     if(typeof cue.text!=='string'||!cue.text.trim()||cue.text.length>120||!['neutral','happy','teasing','concerned'].includes(cue.expression))throw new Error('invalid timer voice');
     if(!timerLineRelevant(cue.text,action,phase))throw new Error('timer voice is not relevant');
   }catch{cue=fallback;}
-  const text=cue.text.trim();const pcm=await synthesis.prepare(text,8);
+  const text=cue.text.trim();const pcm=await synthesis.prepare(text,settings.audioOutputGain);
   return {text,expression:cue.expression,pcm,preparedAt:Date.now()};
 }
 function voiceKey(action,phase){return JSON.stringify([voiceRevision,action,phase,settings.focusMinutes,settings.breakMinutes,settings.model,state.presence]);}
@@ -138,7 +138,7 @@ async function playTimerSpeech(text,expression,source,requestId,pcm,timing={}){
       const remote=remoteDevice.snapshot();
       if(transport==='wifi'&&remote.connected&&remote.applied?.audioReady!==false&&!audioOccupied()&&!motor.busy){
         cameraEpoch++;camera.enable(false);vision.close();setCharacter(expression,text,source);
-        synthesis.enqueuePrepared(randomBytes(4).toString('hex'),pcm,208,8,source);
+        synthesis.enqueuePrepared(randomBytes(4).toString('hex'),pcm,settings.audioVolume,settings.audioOutputGain,source);
         synthesis.job.preparedAt=timing.preparedAt;synthesis.job.triggeredAt=timing.triggeredAt;
         synthesis.job.enqueueDelayMs=Date.now()-timing.triggeredAt;
         return;
@@ -220,7 +220,7 @@ const server = http.createServer(async (req, res) => {
   if (![...localHosts,publicHost,devHost].includes(host)) return json(res, 403, { error: '主機名稱不允許。' });
   // LAN development exposes authenticated device routes only; administration stays local.
   if (host === devHost && !req.url.startsWith('/api/device/')) return json(res,403,{error:'開發區網僅開放裝置連線，請在本機操作網頁。'});
-  if (host === publicHost && req.headers['x-forwarded-proto'] !== 'https') return json(res, 403, { error: '需要 HTTPS 反向代理。' });
+  if (host === publicHost && publicOrigin.startsWith('https:') && req.headers['x-forwarded-proto'] !== 'https') return json(res, 403, { error: '需要 HTTPS 反向代理。' });
   if (req.headers.origin && ![`http://127.0.0.1:${port}`, `http://localhost:${port}`,publicOrigin].includes(req.headers.origin)) return json(res, 403, { error: '來源不允許。' });
   try {
     const route = new URL(req.url, `http://${host}`).pathname;
@@ -358,16 +358,18 @@ const server = http.createServer(async (req, res) => {
       }
       if(motor.busy&&(['/api/speech','/api/audio','/api/synthesis','/api/timer','/api/chat'].includes(route)||(route==='/api/camera'&&input.action==='start')))throw new Error('請等馬達動作結束。');
       if(route==='/api/synthesis') {
+        if((input.volume!==undefined&&(!Number.isInteger(input.volume)||input.volume<32||input.volume>255))||(input.outputGain!==undefined&&![4,8].includes(input.outputGain)))throw new Error('播放音量設定不正確。');
         if(input.action!=='play'||transport!=='wifi'||!remoteDevice.snapshot().connected)throw new Error('請先連接 Wi-Fi 裝置。');
         synthesis.snapshot();if(synthesis.busy)throw new Error('上一段語音仍在處理。');
         if(['queued','recording','transcribing'].includes(speech.snapshot().status)||(audio.requestedAt && Date.now()-audio.requestedAt<20000 && !['completed','timeout'].includes(audio.status) && !audio.status.endsWith('_failed')))throw new Error('請等待目前錄音或播放結束。');
         if(typeof input.text!=='string'||!input.text.trim()||input.text.length>200)throw new Error('朗讀文字需介於 1～200 字。');
-        const volume=input.volume ?? 208, outputGain=input.outputGain ?? 8;
+        const volume=settings.audioVolume, outputGain=settings.audioOutputGain;
         if(!Number.isInteger(volume)||volume<32||volume>255||![4,8].includes(outputGain))throw new Error('播放音量設定不正確。');
         if(!startCharacterSpeech(input.text,'neutral',input.source==='chat'?'chat':'manual',volume,outputGain))throw new Error('請等待目前語音互動完成。');
         return json(res,202,snapshot());
       }
       if(['/api/speech','/api/audio'].includes(route) || (route==='/api/camera' && input.action==='start')) {
+        if(route==='/api/audio'&&((input.volume!==undefined&&(!Number.isInteger(input.volume)||input.volume<32||input.volume>255))||(input.outputGain!==undefined&&![4,8].includes(input.outputGain))))throw new Error('播放音量設定不正確。');
         synthesis.snapshot();if(synthesis.busy)throw new Error('請等待合成語音播放完成。');
       }
       if(route==='/api/speech') {
@@ -378,13 +380,13 @@ const server = http.createServer(async (req, res) => {
         synthesis.snapshot();if(synthesis.busy || ['queued','recording','transcribing'].includes(speech.snapshot().status))throw new Error('另一段語音已開始，請等候完成。');
         const id=randomBytes(4).toString('hex');speech.start(id);
         cameraEpoch++;camera.enable(false);vision.close();
-        audio={id,status:'queued',peak:0,rms:0,requestedAt:Date.now(),volume:208,mode:'speech',outputGain:8};
+        audio={id,status:'queued',peak:0,rms:0,requestedAt:Date.now(),volume:settings.audioVolume,mode:'speech',outputGain:settings.audioOutputGain};
         return json(res,200,snapshot());
       }
       if(route==='/api/audio') {
         if(['queued','recording','transcribing'].includes(speech.snapshot().status)) throw new Error('語音辨識正在處理中。');
-        const volume=input.volume ?? 208;
-        const outputGain=input.outputGain ?? 8;
+        const volume=settings.audioVolume;
+        const outputGain=settings.audioOutputGain;
         if(![4,8].includes(outputGain)) throw new Error('輸出模式不正確。');
         if(!Number.isInteger(volume) || volume<32 || volume>255) throw new Error('音量需介於 32 到 255。');
         if(!['test','speaker'].includes(input.action) || transport!=='wifi' || !remoteDevice.snapshot().connected) throw new Error('請先連接 Wi-Fi 裝置。');
@@ -407,8 +409,17 @@ const server = http.createServer(async (req, res) => {
         else throw new Error('相機操作不正確。');
         return json(res,200,snapshot());
       }
+      if (route === '/api/audio/settings') {
+        if(!Number.isInteger(input.volume)||input.volume<32||input.volume>255||![4,8].includes(input.outputGain))throw new Error('播放音量設定不正確。');
+        const gainChanged=settings.audioOutputGain!==input.outputGain;
+        settings.audioVolume=input.volume;settings.audioOutputGain=input.outputGain;
+        saveValue('settings',settings);
+        if(gainChanged){voiceRevision++;preparedVoices.clear();completionVoiceKey='';timerVoiceRequest++;timerVoiceBusy=false;}
+        return json(res,200,snapshot());
+      }
       if (route === '/api/settings') {
         const nextSettings = validateSettings(input);
+        nextSettings.audioVolume=settings.audioVolume;nextSettings.audioOutputGain=settings.audioOutputGain;
         nextSettings.motorCenterOffset=settings.motorCenterOffset;
         nextSettings.timerMotionDegrees=settings.timerMotionDegrees;
         if (reconcile(state, settings)) saveState();
@@ -473,7 +484,7 @@ realtime=attachRealtime(server,{
     const host=req.headers.host,route=new URL(req.url,`http://${host}`).pathname;
     const local=[`127.0.0.1:${port}`,`localhost:${port}`],external=[publicOrigin,devOrigin].filter(Boolean).map(origin=>new URL(origin).host);
     if(![...local,...external].includes(host))return null;
-    if(host===(publicOrigin?new URL(publicOrigin).host:null)&&req.headers['x-forwarded-proto']!=='https')return null;
+    if(publicOrigin.startsWith('https:')&&host===new URL(publicOrigin).host&&req.headers['x-forwarded-proto']!=='https')return null;
     if(req.headers.origin&&![...local.map(host=>`http://${host}`),publicOrigin].includes(req.headers.origin))return null;
     if(route==='/api/device/live')return remoteDevice.authorized(req.headers.authorization)?'device':null;
     if(route!=='/api/live'||host===(devOrigin?new URL(devOrigin).host:null))return null;
@@ -497,6 +508,6 @@ realtime=attachRealtime(server,{
     else if(report.type==='motor_result')motor.report(report);
   }
 });
-server.listen(port, devOrigin ? '0.0.0.0' : '127.0.0.1', () => console.log(`StackChan ready: http://127.0.0.1:${port}`));
+server.listen(port, devOrigin || publicOrigin.startsWith('http:') ? '0.0.0.0' : '127.0.0.1', () => console.log(`StackChan ready: http://127.0.0.1:${port}`));
 server.on('error', error => { console.error(error.message); process.exitCode = 1; clearInterval(ticker); device.close(); db.close(); });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { clearInterval(ticker); device.close(); vision.close(); saveState(); server.close(() => { db.close(); process.exit(0); }); });

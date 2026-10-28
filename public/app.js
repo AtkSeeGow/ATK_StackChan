@@ -104,6 +104,8 @@ function fillSettings() {
     const field = $('settingsForm').elements.namedItem(key);
     if (field) field.type==='checkbox' ? field.checked=Boolean(value) : field.value=value;
   }
+  $('audioVolume').value=state.settings.audioVolume; $('audioOutputGain').value=state.settings.audioOutputGain;
+  $('audioVolumeValue').textContent=`${state.settings.audioVolume} / 255`;
   toggleGrace(); settingsLoaded = true;
 }
 function toggleGrace() { $('graceField').hidden = $('settingsForm').elements.absencePolicy.value !== 'grace'; }
@@ -162,6 +164,9 @@ $('checkConnection').onclick = checkHealth;
 $('cameraStart').onclick = () => action('camera',{action:'start'});
 $('audioTest').onclick = () => action('audio',{action:'test',volume:Number($('audioVolume').value),outputGain:Number($('audioOutputGain').value)});
 $('speakerTest').onclick = () => action('audio',{action:'speaker',volume:Number($('audioVolume').value),outputGain:Number($('audioOutputGain').value)});
+const saveGlobalAudio=()=>action('audio/settings',{volume:Number($('audioVolume').value),outputGain:Number($('audioOutputGain').value)});
+$('audioVolume').onchange=saveGlobalAudio;
+$('audioOutputGain').onchange=saveGlobalAudio;
 $('audioVolume').oninput = event => { $('audioVolumeValue').textContent=`${event.target.value} / 255`; };
 $('speechStart').onclick=()=>action('speech',{action:'start'});
 $('synthesisPlay').onclick=()=>action('synthesis',{action:'play',text:$('synthesisText').value,volume:Number($('audioVolume').value),outputGain:Number($('audioOutputGain').value)});

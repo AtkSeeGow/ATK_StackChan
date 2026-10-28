@@ -76,7 +76,7 @@ void serviceAudio() {
       if(!strcmp(lastAudioId,playback.id)) {free(playback.data);return;}
       strcpy(lastAudioId,playback.id);audioPeak=0;audioRms=0;
       ampVolume=ampSystem=ampI2s=ampBoost=-1;
-      if(!playback.data || !playback.length || playback.length>1020000 || playback.length%2 || millis()-playback.received>5000) {free(playback.data);audioReport("download_failed");return;}
+      if(!playback.data || !playback.length || playback.length>4194304 || playback.length%2 || millis()-playback.received>5000) {free(playback.data);audioReport("download_failed");return;}
       cameraControl("C|0");
       if(cameraBusReleased) {M5.In_I2C.begin();cameraBusReleased=false;}
       M5.Mic.end();M5.Speaker.end();
@@ -85,7 +85,7 @@ void serviceAudio() {
       auto cfg=M5.Speaker.config();cfg.task_priority=5;cfg.dma_buf_count=16;cfg.magnification=audioOutputGain;M5.Speaker.config(cfg);
       M5.Speaker.setVolume(audioVolume);
       if(!beginAudioOutput() || !M5.Speaker.playRaw(audioSamples,audioLength,audioRate,false)) {finishAudio("playback_failed");return;}
-      audioStage=3;audioAt=millis();audioTimeoutMs=(uint32_t)(playback.length*1000/34000)+5000;
+      audioStage=3;audioAt=millis();audioTimeoutMs=(uint32_t)((uint64_t)playback.length*1000/34000)+5000;
       audioReport("playback");
     }
   }

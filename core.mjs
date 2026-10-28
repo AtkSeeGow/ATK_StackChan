@@ -1,7 +1,7 @@
 export const defaults = {
   focusMinutes: 25, breakMinutes: 5, absencePolicy: 'continue', absenceGraceSeconds: 60,
   ollamaUrl: 'http://192.168.0.100:11434', model: 'qwen3.5:4b', presenceSource: 'manual',
-  timerVoice: false, autoSpeakReplies: false, timerLights: true, timerMotion: true, motorCenterOffset:0, timerMotionDegrees:15
+  audioVolume:208, audioOutputGain:8, timerVoice: false, autoSpeakReplies: false, timerLights: true, timerMotion: true, motorCenterOffset:0, timerMotionDegrees:15
 };
 
 export function newState() {

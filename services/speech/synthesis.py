@@ -4,7 +4,7 @@ import pathlib
 import subprocess
 
 RATE = 17000
-MAX_SECONDS = 30
+MAX_PCM_BYTES = 4 * 1024 * 1024
 
 def synthesize(text, timeout=45):
     if not isinstance(text, str) or not text.strip() or len(text) > 200:
@@ -19,6 +19,6 @@ def synthesize(text, timeout=45):
     if result.returncode:
         raise RuntimeError('Local Windows synthesis failed')
     pcm = result.stdout
-    if not pcm or len(pcm) % 2 or len(pcm) > RATE * 2 * MAX_SECONDS:
-        raise RuntimeError('Synthesis audio exceeds supported duration or format')
+    if not pcm or len(pcm) % 2 or len(pcm) > MAX_PCM_BYTES:
+        raise RuntimeError('Synthesis audio exceeds memory budget or format')
     return pcm

@@ -32,7 +32,7 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
   const base = `http://127.0.0.1:${port}`;
   let child;
   async function start(extraEnv = {}) {
-    child = spawn(process.execPath, ['server.mjs'], { cwd: path.resolve(import.meta.dirname, '..'), env: {...process.env, PORT:String(port),STACKCHAN_DATA_DIR:folder,STACKCHAN_SERIAL_PORT:'off',STACKCHAN_TRANSPORT:'usb',STACKCHAN_DEV_ORIGIN:'',...extraEnv}, stdio:['ignore','pipe','pipe'] });
+    child = spawn(process.execPath, ['server.mjs'], { cwd: path.resolve(import.meta.dirname, '..'), env: {...process.env, PORT:String(port),STACKCHAN_DATA_DIR:folder,STACKCHAN_SERIAL_PORT:'off',STACKCHAN_TRANSPORT:'usb',STACKCHAN_DEV_ORIGIN:'',STACKCHAN_PUBLIC_ORIGIN:'',...extraEnv}, stdio:['ignore','pipe','pipe'] });
     await new Promise((resolve,reject) => {
       const timeout = setTimeout(() => reject(new Error('server start timed out')), 10000);
       child.stdout.on('data', chunk => { if (chunk.toString().includes('ready:')) { clearTimeout(timeout); resolve(); } });
@@ -62,7 +62,17 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
     assert.equal((await request('/api/chat', {text:'第二次'})).status, 502);
     assert.equal((await request('/api/messages')).body.length, 2);
     assert.equal((await request('/api/state')).body.chatBusy, false);
+    assert.equal((await request('/api/audio/settings',{volume:31,outputGain:8})).status,400);
+    assert.equal((await request('/api/audio/settings',{volume:96,outputGain:6})).status,400);
+    const audioSettings=await request('/api/audio/settings',{volume:96,outputGain:4});
+    assert.equal(audioSettings.body.settings.audioVolume,96);
+    assert.equal(audioSettings.body.settings.audioOutputGain,4);
+    await request('/api/settings',config);
     await stop(); await start();
+    const restoredAudio=(await request('/api/state')).body.settings;
+    assert.equal(restoredAudio.audioVolume,96);
+    assert.equal(restoredAudio.audioOutputGain,4);
+    await request('/api/audio/settings',{volume:208,outputGain:8});
     s = (await request('/api/state')).body;
     assert.equal(s.settings.focusMinutes, 1); assert.equal(s.timer.status, 'paused');
     assert.equal((await request('/api/messages')).body.length, 2);
@@ -121,6 +131,20 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
     assert.equal(await proxyStatus({...owner,Host:'stackchan.test'}),403);
     assert.equal(await proxyStatus({...owner,Host:'stackchan.test','X-Forwarded-Proto':'https'}),200);
     await stop();
+    await start({STACKCHAN_PUBLIC_ORIGIN:'http://stackchan.test',STACKCHAN_DEVICE_TOKEN:token,STACKCHAN_WEB_USER:'owner',STACKCHAN_WEB_PASSWORD:password});
+    assert.equal(await proxyStatus({Host:'stackchan.test'}),401);
+    assert.equal(await proxyStatus({...bearer,Host:'stackchan.test'}),401);
+    assert.equal(await proxyStatus({...owner,Host:'stackchan.test'}),200);
+    assert.equal(await proxyStatus({...owner,Host:'unexpected.test'}),403);
+    const demoSocket=new WebSocket(`ws://127.0.0.1:${port}/api/live`,{headers:{...owner,Host:'stackchan.test',Origin:'http://stackchan.test'}});
+    const demoMessage=once(demoSocket,'message');
+    assert.ok(JSON.parse((await demoMessage)[0].toString()).timer);
+    demoSocket.close();await once(demoSocket,'close');
+    const deniedSocket=new WebSocket(`ws://127.0.0.1:${port}/api/live`,{headers:{Host:'stackchan.test',Origin:'http://stackchan.test'}});
+    deniedSocket.on('error',()=>{});
+    const [deniedRequest,deniedResponse]=await once(deniedSocket,'unexpected-response');
+    assert.equal(deniedResponse.statusCode,403);deniedResponse.resume();deniedRequest.destroy();
+    await stop();
     await start({STACKCHAN_PUBLIC_ORIGIN:'',STACKCHAN_DEV_ORIGIN:`http://192.168.0.199:${port}`,STACKCHAN_DEVICE_TOKEN:token});
     const devHost = {Host:`192.168.0.199:${port}`};
     assert.equal(await proxyStatus(devHost),403);
@@ -150,12 +174,15 @@ test('HTTP integration: persistence, timer, origin protection, Ollama success/fa
     assert.equal((await request('/api/audio',{action:'test',volume:256})).status,400);
     assert.equal((await request('/api/audio',{action:'test',outputGain:16})).status,400);
     assert.equal((await request('/api/audio',{action:'test',volume:'208'})).status,400);
+    await request('/api/audio/settings',{volume:96,outputGain:4});
     const audioTest=await request('/api/audio',{action:'test',volume:208});
     assert.equal(audioTest.status,200);assert.equal(audioTest.body.camera.enabled,false);
     assert.match(audioTest.body.audio.id,/^[a-f0-9]{8}$/);
-    assert.equal(audioTest.body.audio.volume,208);
-    assert.equal((await fetch(base+'/api/device/frame',{headers:bearer})).headers.get('x-stackchan-volume'),'208');
-    assert.equal((await fetch(base+'/api/device/frame',{headers:bearer})).headers.get('x-stackchan-output-gain'),'8');
+    assert.equal(audioTest.body.audio.volume,96);
+    assert.equal(audioTest.body.audio.outputGain,4);
+    assert.equal((await fetch(base+'/api/device/frame',{headers:bearer})).headers.get('x-stackchan-volume'),'96');
+    await request('/api/audio/settings',{volume:208,outputGain:8});
+    assert.equal((await fetch(base+'/api/device/frame',{headers:bearer})).headers.get('x-stackchan-output-gain'),'4');
     assert.equal((await request('/api/audio',{action:'test'})).status,400);
     const reportAudio=data=>fetch(base+'/api/device/audio',{method:'POST',headers:{...bearer,'Content-Type':'application/json'},body:JSON.stringify(data)});
     assert.equal((await reportAudio({id:'00000000',status:'completed',peak:123,rms:23})).status,409);

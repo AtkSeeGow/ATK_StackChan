@@ -140,11 +140,11 @@ void networkTask(void*) {
                 const char* pcmHeaders[]={"X-Audio-Sample-Rate"};download.collectHeaders(pcmHeaders,1);
                 download.addHeader("Authorization",String("Bearer ")+STACKCHAN_DEVICE_TOKEN);
                 int code=download.GET(), length=download.getSize();
-                if(code==200 && download.header("X-Audio-Sample-Rate")=="17000" && length>0 && length<=1020000 && length%2==0) {
+                if(code==200 && download.header("X-Audio-Sample-Rate")=="17000" && length>0 && length<=4194304 && length%2==0) {
                   playback.data=(uint8_t*)ps_malloc(length);
                   if(playback.data) {
                     size_t received=0;uint32_t started=millis();auto* stream=download.getStreamPtr();
-                    while(received<(size_t)length && millis()-started<10000) {
+                    while(received<(size_t)length && millis()-started<30000) {
                       int available=stream->available();
                       if(available>0) {int read=stream->read(playback.data+received,min((size_t)available,(size_t)length-received));if(read>0)received+=read;else break;}
                       else if(!download.connected())break;
